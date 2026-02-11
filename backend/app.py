@@ -1,8 +1,9 @@
 import os
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from .config import config
 from .core.collector import system_monitor
+from .core.preprocessor import data_scaler
 
 def create_app(config_name=None):
     if config_name is None:
@@ -29,7 +30,14 @@ def create_app(config_name=None):
     @app.route('/api/metrics/current', methods=['GET'])
     def get_current_metrics():
         metrics = system_monitor.get_latest_metrics()
-        return jsonify(metrics if metrics else {})
+        if not metrics:
+            return jsonify({})
+            
+        normalized = request.args.get('normalized', 'false').lower() == 'true'
+        if normalized:
+            return jsonify(data_scaler.normalize_metrics(metrics))
+            
+        return jsonify(metrics)
 
     # Register blueprints (placeholders for now)
     # from .api import api_bp
