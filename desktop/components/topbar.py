@@ -27,6 +27,7 @@ from desktop.theme import (
     BG_TOPBAR, BORDER, ORANGE, RED, RED_BG,
     TEXT_PRIMARY, TEXT_SECONDARY, FONT_FAMILY,
 )
+from desktop.icons import get_icon
 
 
 class TopBar(ctk.CTkFrame):
@@ -61,6 +62,9 @@ class TopBar(ctk.CTkFrame):
         self._on_logout = on_logout
         self._on_back = on_back
 
+        # Keep icon references to prevent garbage collection
+        self._icons = {}
+
         # ── Bottom border ───────────────────────────────────────
         border = ctk.CTkFrame(self, height=1, fg_color=BORDER)
         border.pack(side="bottom", fill="x")
@@ -73,10 +77,13 @@ class TopBar(ctk.CTkFrame):
         left.pack(side="left", fill="y")
 
         # Back button (hidden by default; shown on non-dashboard screens)
+        back_icon = get_icon("back_arrow", size=16, color=TEXT_SECONDARY)
+        self._icons["back"] = back_icon
         self._back_btn = ctk.CTkButton(
-            left, text="←", width=40, height=40, corner_radius=10,
+            left, text="", width=40, height=40, corner_radius=10,
+            image=back_icon,
             fg_color="#1a1c24", hover_color="#2a2c36",
-            font=ctk.CTkFont(size=18), text_color=TEXT_SECONDARY,
+            text_color=TEXT_SECONDARY,
             command=self._handle_back,
         )
         self._back_btn.pack(side="left", padx=(0, 12))
@@ -104,19 +111,25 @@ class TopBar(ctk.CTkFrame):
         right = ctk.CTkFrame(inner, fg_color="transparent")
         right.pack(side="right", fill="y")
 
-        # Notification bell (placeholder — no handler attached)
+        # Notification bell
+        bell_icon = get_icon("bell", size=16, color=TEXT_SECONDARY)
+        self._icons["bell"] = bell_icon
         notif_btn = ctk.CTkButton(
-            right, text="(!)", width=40, height=40, corner_radius=10,
+            right, text="", width=40, height=40, corner_radius=10,
+            image=bell_icon,
             fg_color="#1a1c24", hover_color="#2a2c36",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=TEXT_SECONDARY,
+            text_color=TEXT_SECONDARY,
         )
         notif_btn.pack(side="left", padx=4)
 
         # Logout / power-off button (red-tinted)
+        power_icon = get_icon("power", size=16, color=RED)
+        self._icons["power"] = power_icon
         logout_btn = ctk.CTkButton(
-            right, text="Off", width=40, height=40, corner_radius=10,
+            right, text="", width=40, height=40, corner_radius=10,
+            image=power_icon,
             fg_color=RED_BG, hover_color="#3a1515",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=11, weight="bold"), text_color=RED,
+            text_color=RED,
             command=self._on_logout,
         )
         logout_btn.pack(side="left", padx=4)

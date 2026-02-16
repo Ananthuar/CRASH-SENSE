@@ -86,7 +86,7 @@ class PredictionScreen(ctk.CTkFrame):
                 fg_color=bg if is_active else "transparent",
                 corner_radius=10,
                 border_width=1 if is_active else 0,
-                border_color=color if is_active else "transparent",
+                border_color=color,
             )
             row.pack(fill="x", padx=16, pady=4)
             ri = ctk.CTkFrame(row, fg_color="transparent")

@@ -125,7 +125,7 @@ class SettingsScreen(ctk.CTkFrame):
         info_row.columnconfigure(0, weight=1)
         info_row.columnconfigure(1, weight=1)
 
-        for col, (label, val) in enumerate([("Model Version", "v2.4.1"), ("Last Training", "Jan 10, 2026")]):
+        for col, (label, val) in enumerate([("Model Version", "v1.0.0"), ("Last Training", "Pending...")]):
             box = ctk.CTkFrame(info_row, fg_color=BG_CARD_INNER, corner_radius=10, border_width=1, border_color=BORDER)
             box.grid(row=0, column=col, padx=(0 if col == 0 else 4, 4 if col == 0 else 0), sticky="nsew")
             bi = ctk.CTkFrame(box, fg_color="transparent")

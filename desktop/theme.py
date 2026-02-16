@@ -50,7 +50,7 @@ BLUE_BG = "#0f1a2a"            # Blue badge background
 # ─── Text Colors ───────────────────────────────────────────────
 # Four-level text hierarchy for readability on dark backgrounds.
 TEXT_PRIMARY = "#ffffff"        # Headings, metric values, primary content
-TEXT_SECONDARY = "#9ca3af"      # Subtitles, descriptions, table content
+TEXT_SECONDARY = "#b0b8c4"      # Subtitles, descriptions, table content
 TEXT_MUTED = "#6b7280"          # Timestamps, hints, footer text
 TEXT_DARK = "#4b5563"           # Disabled / placeholder / lowest priority text
 
@@ -61,17 +61,17 @@ BORDER_LIGHT = "#2a2c36"       # Slightly visible border (hover states)
 BORDER_ORANGE = "#5c2d0e"      # Orange-tinted border for highlighted cards
 
 # ─── Typography ────────────────────────────────────────────────
-# Inter is a modern sans-serif optimized for screen readability.
-FONT_FAMILY = "Inter"
+# Helvetica is Tk's built-in sans-serif — renders cleanly on every platform.
+FONT_FAMILY = "Helvetica"
 
 # ─── Sidebar Navigation Items ──────────────────────────────────
 # Each entry maps to a screen in the application.
-# The 'id' is used as the routing key in app.py, 'icon' is a Unicode symbol.
+# Icons use BMP Unicode symbols (U+0000–U+FFFF) for reliable Tkinter rendering.
 NAV_ITEMS = [
-    {"id": "dashboard",     "label": "Dashboard",     "icon": "[#]"},
-    {"id": "alerts",        "label": "Alerts",        "icon": "/!\\"},
-    {"id": "crash-details", "label": "Crash Details", "icon": "[i]"},
-    {"id": "logs",          "label": "Logs",          "icon": "[=]"},
-    {"id": "prediction",    "label": "Prediction",    "icon": "[^]"},
-    {"id": "settings",      "label": "Settings",      "icon": "{*}"},
+    {"id": "dashboard",     "label": "Dashboard",     "icon": "\u25A6"},
+    {"id": "alerts",        "label": "Alerts",        "icon": "\u26A0"},
+    {"id": "crash-details", "label": "Crash Details", "icon": "\u24D8"},
+    {"id": "logs",          "label": "Logs",          "icon": "\u2630"},
+    {"id": "prediction",    "label": "Prediction",    "icon": "\u25CE"},
+    {"id": "settings",      "label": "Settings",      "icon": "\u2699"},
 ]

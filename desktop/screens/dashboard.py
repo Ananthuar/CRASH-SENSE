@@ -17,6 +17,7 @@ from desktop.theme import (
     TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER, FONT_FAMILY,
 )
 from desktop.data import DASHBOARD_METRICS, CRASH_TREND_DATA, CPU_DATA, MEMORY_DATA
+from desktop.icons import get_icon
 
 
 class DashboardScreen(ctk.CTkFrame):
@@ -31,6 +32,12 @@ class DashboardScreen(ctk.CTkFrame):
         # Single scroll container
         scroll = ctk.CTkScrollableFrame(self, fg_color=BG_ROOT, scrollbar_button_color="#1e2028", scrollbar_button_hover_color="#2a2c36")
         scroll.pack(fill="both", expand=True)
+
+        # Bind mouse wheel for smooth scrolling
+        def _on_mousewheel(event):
+            scroll._parent_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        scroll.bind_all("<Button-4>", lambda e: scroll._parent_canvas.yview_scroll(-3, "units"))
+        scroll.bind_all("<Button-5>", lambda e: scroll._parent_canvas.yview_scroll(3, "units"))
 
         # ── System Status Banner ────────────────────────────────
         status = ctk.CTkFrame(scroll, fg_color=GREEN_BG, corner_radius=16, border_width=1, border_color="#1a4a2a")
@@ -62,11 +69,12 @@ class DashboardScreen(ctk.CTkFrame):
         for i in range(4):
             cards_frame.columnconfigure(i, weight=1, uniform="mc")
 
-        card_icons = ["[#]", "[T]", "/!\\", "[S]"]
+        card_icon_names = ["crash_count", "recovery_time", "anomaly_score", "active_alerts"]
+        self._metric_icons = []  # Keep references to prevent GC
         keys = list(DASHBOARD_METRICS.keys())
-        for col, (key, icon) in enumerate(zip(keys, card_icons)):
+        for col, (key, icon_name) in enumerate(zip(keys, card_icon_names)):
             m = DASHBOARD_METRICS[key]
-            self._make_metric_card(cards_frame, col, icon, m)
+            self._make_metric_card(cards_frame, col, icon_name, m)
 
         # ── Crash Trend Chart ───────────────────────────────────
         self._make_chart_section(scroll, "Crash Trend - Last 24 Hours", CRASH_TREND_DATA, "crashes", ORANGE, "Crashes", True)
@@ -80,7 +88,7 @@ class DashboardScreen(ctk.CTkFrame):
         self._make_resource_chart(charts_frame, 0, "CPU Usage", CPU_DATA, ORANGE, "52%")
         self._make_resource_chart(charts_frame, 1, "Memory Usage", MEMORY_DATA, AMBER, "68%")
 
-    def _make_metric_card(self, parent, col, icon, m):
+    def _make_metric_card(self, parent, col, icon_name, m):
         card = ctk.CTkFrame(parent, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
         card.grid(row=0, column=col, padx=6, sticky="nsew")
 
@@ -90,10 +98,13 @@ class DashboardScreen(ctk.CTkFrame):
         top = ctk.CTkFrame(inner, fg_color="transparent")
         top.pack(fill="x")
 
+        # Icon as CTkImage
+        icon_img = get_icon(icon_name, size=22, color=ORANGE)
+        self._metric_icons.append(icon_img)
         icon_frame = ctk.CTkFrame(top, width=44, height=44, corner_radius=12, fg_color="#2a1a08")
         icon_frame.pack(side="left")
         icon_frame.pack_propagate(False)
-        ctk.CTkLabel(icon_frame, text=icon, font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"), text_color=ORANGE).pack(expand=True)
+        ctk.CTkLabel(icon_frame, image=icon_img, text="").pack(expand=True)
 
         trend_color = RED if m["trend_up"] else GREEN
         trend_bg = "#2a0f0f" if m["trend_up"] else "#0a2a14"

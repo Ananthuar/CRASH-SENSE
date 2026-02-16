@@ -40,6 +40,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 import customtkinter as ctk
+from PIL import Image, ImageTk
 
 # ── Internal imports ────────────────────────────────────────────
 from desktop.theme import BG_ROOT, FONT_FAMILY
@@ -80,6 +81,13 @@ class CrashSenseApp(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         self.configure(fg_color=BG_ROOT)
+
+        # ── Set window icon ─────────────────────────────────────
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.png")
+        if os.path.exists(icon_path):
+            icon_img = Image.open(icon_path)
+            self._icon_photo = ImageTk.PhotoImage(icon_img)
+            self.iconphoto(True, self._icon_photo)
 
         # Track which screen is currently visible
         self._current_screen_id = "dashboard"

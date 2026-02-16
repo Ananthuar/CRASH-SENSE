@@ -22,6 +22,9 @@ from desktop.theme import (
     BG_SIDEBAR, ORANGE, ORANGE_BG, TEXT_SECONDARY, TEXT_MUTED,
     BORDER, FONT_FAMILY, NAV_ITEMS, TEXT_PRIMARY,
 )
+from desktop.icons import get_icon
+import os
+from PIL import Image
 
 
 class Sidebar(ctk.CTkFrame):
@@ -48,28 +51,35 @@ class Sidebar(ctk.CTkFrame):
         self._on_logout = on_logout
         self._active = "dashboard"   # Default active screen
         self._buttons = {}
+        self._icons = {}             # Store icon references to prevent GC
 
         # ── Branding Section ────────────────────────────────────
         brand_frame = ctk.CTkFrame(self, fg_color="transparent")
         brand_frame.pack(fill="x", padx=20, pady=(24, 4))
 
-        # Shield logo icon
-        logo = ctk.CTkFrame(brand_frame, width=40, height=40, corner_radius=10, fg_color=ORANGE)
-        logo.pack(side="left")
-        logo.pack_propagate(False)
-        ctk.CTkLabel(logo, text="CS", font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"), text_color="#ffffff").pack(expand=True)
+        # App logo icon (loaded from assets/icon.png)
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 "desktop", "assets", "icon.png")
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "..", "assets", "icon.png")
+        pil_icon = Image.open(icon_path).resize((36, 36), Image.LANCZOS)
+        self._brand_icon = ctk.CTkImage(light_image=pil_icon, dark_image=pil_icon, size=(36, 36))
+
+        logo_label = ctk.CTkLabel(brand_frame, image=self._brand_icon, text="")
+        logo_label.pack(side="left")
 
         # App name and tagline
         title_frame = ctk.CTkFrame(brand_frame, fg_color="transparent")
         title_frame.pack(side="left", padx=(12, 0))
         ctk.CTkLabel(
             title_frame, text="CRASH SENSE",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=16, weight="bold"),
+            font=ctk.CTkFont(family=FONT_FAMILY, size=17, weight="bold"),
             text_color=TEXT_PRIMARY,
         ).pack(anchor="w")
         ctk.CTkLabel(
             title_frame, text="Crash Detection System",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=11),
+            font=ctk.CTkFont(family=FONT_FAMILY, size=12),
             text_color=TEXT_SECONDARY,
         ).pack(anchor="w")
 
@@ -91,9 +101,12 @@ class Sidebar(ctk.CTkFrame):
         # ── Logout Button (bottom) ──────────────────────────────
         ctk.CTkFrame(self, height=1, fg_color=BORDER).pack(fill="x", padx=16, pady=(0, 8))
 
+        logout_icon = get_icon("logout", size=18, color=TEXT_SECONDARY)
+        self._icons["logout"] = logout_icon
         logout_btn = ctk.CTkButton(
-            self, text="[>  Logout", anchor="w",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=13),
+            self, text="  Logout", anchor="w",
+            image=logout_icon, compound="left",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=14),
             fg_color="transparent", hover_color="#2a0f0f",
             text_color=TEXT_SECONDARY, height=44, corner_radius=10,
             command=self._on_logout,
@@ -107,7 +120,7 @@ class Sidebar(ctk.CTkFrame):
 
     def _make_nav_button(self, parent, item):
         """
-        Create a single navigation button.
+        Create a single navigation button with a PIL-drawn icon.
 
         Args:
             parent: Parent frame to pack the button into.
@@ -116,11 +129,17 @@ class Sidebar(ctk.CTkFrame):
         Returns:
             CTkButton: The created button reference (stored in _buttons).
         """
+        icon_default = get_icon(item["id"], size=18, color=TEXT_SECONDARY)
+        icon_active = get_icon(item["id"], size=18, color=ORANGE)
+        self._icons[item["id"]] = {"default": icon_default, "active": icon_active}
+
         btn = ctk.CTkButton(
             parent,
-            text=f"{item['icon']}   {item['label']}",
+            text=f"  {item['label']}",
+            image=icon_default,
+            compound="left",
             anchor="w",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=13),
+            font=ctk.CTkFont(family=FONT_FAMILY, size=14),
             fg_color="transparent",
             hover_color="#1a1c24",
             text_color=TEXT_SECONDARY,
@@ -150,7 +169,10 @@ class Sidebar(ctk.CTkFrame):
         """
         self._active = screen_id
         for sid, btn in self._buttons.items():
+            icons = self._icons.get(sid)
             if sid == screen_id:
-                btn.configure(fg_color=ORANGE_BG, text_color=ORANGE)
+                btn.configure(fg_color=ORANGE_BG, text_color=ORANGE,
+                              image=icons["active"] if icons else None)
             else:
-                btn.configure(fg_color="transparent", text_color=TEXT_SECONDARY)
+                btn.configure(fg_color="transparent", text_color=TEXT_SECONDARY,
+                              image=icons["default"] if icons else None)
