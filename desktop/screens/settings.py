@@ -12,6 +12,7 @@ from desktop.theme import (
     TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER, FONT_FAMILY,
 )
 from desktop.data import USERS
+from desktop.icons import get_icon
 
 
 class SettingsScreen(ctk.CTkFrame):
@@ -23,18 +24,22 @@ class SettingsScreen(ctk.CTkFrame):
 
         scroll = ctk.CTkScrollableFrame(self, fg_color=BG_ROOT, scrollbar_button_color="#1e2028", scrollbar_button_hover_color="#2a2c36")
         scroll.pack(fill="both", expand=True)
+        scroll.bind_all("<Button-4>", lambda e: scroll._parent_canvas.yview_scroll(-3, "units"))
+        scroll.bind_all("<Button-5>", lambda e: scroll._parent_canvas.yview_scroll(3, "units"))
+
+        self._section_icons = []  # prevent GC
 
         # Section 1: Alert Thresholds
-        self._section(scroll, "{*}", "Alert Thresholds", "Configure system monitoring thresholds", self._build_thresholds)
+        self._section(scroll, "thresholds", "Alert Thresholds", "Configure system monitoring thresholds", self._build_thresholds)
 
         # Section 2: ML Prediction
-        self._section(scroll, "[AI]", "Machine Learning Prediction", "AI-powered crash prediction settings", self._build_ml)
+        self._section(scroll, "ml_brain", "Machine Learning Prediction", "AI-powered crash prediction settings", self._build_ml)
 
         # Section 3: Notifications
-        self._section(scroll, "(!)", "Notification Settings", "Configure how you receive alerts", self._build_notifications)
+        self._section(scroll, "notification_bell", "Notification Settings", "Configure how you receive alerts", self._build_notifications)
 
         # Section 4: User Management
-        self._section(scroll, "[U]", "User Management", "Manage team access and permissions", self._build_users)
+        self._section(scroll, "user_group", "User Management", "Manage team access and permissions", self._build_users)
 
         # Section 5: Logout
         logout_card = ctk.CTkFrame(scroll, fg_color=RED_BG, corner_radius=16, border_width=1, border_color="#5c1a1a")
@@ -42,10 +47,12 @@ class SettingsScreen(ctk.CTkFrame):
         li = ctk.CTkFrame(logout_card, fg_color="transparent")
         li.pack(fill="x", padx=20, pady=16)
 
+        sec_icon = get_icon("shield_lock", size=22, color=RED)
+        self._section_icons.append(sec_icon)
         icon = ctk.CTkFrame(li, width=48, height=48, corner_radius=12, fg_color="#3a1515")
         icon.pack(side="left")
         icon.pack_propagate(False)
-        ctk.CTkLabel(icon, text="[>", font=ctk.CTkFont(family=FONT_FAMILY, size=16, weight="bold"), text_color=RED).pack(expand=True)
+        ctk.CTkLabel(icon, image=sec_icon, text="").pack(expand=True)
 
         txt = ctk.CTkFrame(li, fg_color="transparent")
         txt.pack(side="left", padx=(12, 0))
@@ -59,17 +66,19 @@ class SettingsScreen(ctk.CTkFrame):
             command=self._on_logout,
         ).pack(side="right")
 
-    def _section(self, parent, icon_text, title, subtitle, builder):
+    def _section(self, parent, icon_name, title, subtitle, builder):
         card = ctk.CTkFrame(parent, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
         card.pack(fill="x", padx=24, pady=(12, 0))
 
         header = ctk.CTkFrame(card, fg_color="transparent")
         header.pack(fill="x", padx=20, pady=(16, 12))
 
+        sec_icon = get_icon(icon_name, size=22, color=ORANGE)
+        self._section_icons.append(sec_icon)
         icon = ctk.CTkFrame(header, width=48, height=48, corner_radius=12, fg_color="#2a1a08")
         icon.pack(side="left")
         icon.pack_propagate(False)
-        ctk.CTkLabel(icon, text=icon_text, font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"), text_color=ORANGE).pack(expand=True)
+        ctk.CTkLabel(icon, image=sec_icon, text="").pack(expand=True)
 
         txt = ctk.CTkFrame(header, fg_color="transparent")
         txt.pack(side="left", padx=(12, 0))

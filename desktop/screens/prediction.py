@@ -26,6 +26,8 @@ class PredictionScreen(ctk.CTkFrame):
 
         scroll = ctk.CTkScrollableFrame(self, fg_color=BG_ROOT, scrollbar_button_color="#1e2028", scrollbar_button_hover_color="#2a2c36")
         scroll.pack(fill="both", expand=True)
+        scroll.bind_all("<Button-4>", lambda e: scroll._parent_canvas.yview_scroll(-3, "units"))
+        scroll.bind_all("<Button-5>", lambda e: scroll._parent_canvas.yview_scroll(3, "units"))
 
         # ── Top Row: Gauge + Risk ────────────────────────────────
         top_row = ctk.CTkFrame(scroll, fg_color="transparent")

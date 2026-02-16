@@ -32,21 +32,21 @@ Sections:
 #   trend     – percentage or count change indicator
 #   trend_up  – True if the trend is negative (red), False if positive (green)
 DASHBOARD_METRICS = {
-    "crash_count": {
-        "value": "24", "label": "Crash Count",
-        "sub": "Last 24 hours", "trend": "-12%", "trend_up": False,
+    "process_count": {
+        "value": "--", "label": "Processes",
+        "sub": "Loading...", "trend": "Live", "trend_up": False,
     },
-    "avg_recovery": {
-        "value": "2.4s", "label": "Avg Recovery Time",
-        "sub": "System response", "trend": "+8%", "trend_up": True,
+    "uptime": {
+        "value": "--", "label": "System Uptime",
+        "sub": "Loading...", "trend": "Live", "trend_up": False,
     },
-    "anomaly_score": {
-        "value": "0.34", "label": "Anomaly Score",
-        "sub": "Low risk level", "trend": "-5%", "trend_up": False,
+    "cpu_usage": {
+        "value": "--", "label": "CPU Usage",
+        "sub": "Loading...", "trend": "Live", "trend_up": False,
     },
-    "active_alerts": {
-        "value": "7", "label": "Active Alerts",
-        "sub": "3 critical", "trend": "+2", "trend_up": True,
+    "thread_count": {
+        "value": "--", "label": "Active Threads",
+        "sub": "Loading...", "trend": "Live", "trend_up": False,
     },
 }
 

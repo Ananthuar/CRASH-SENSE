@@ -4,9 +4,11 @@ CrashSense — Dashboard Screen
 
 The primary view after login. Provides a high-level overview of system health
 with KPI cards, crash trend chart, and resource usage charts.
+Real-time statistics update every 3 seconds.
 """
 
 import customtkinter as ctk
+from datetime import datetime
 import matplotlib
 matplotlib.use("Agg")
 from matplotlib.figure import Figure
@@ -18,6 +20,7 @@ from desktop.theme import (
 )
 from desktop.data import DASHBOARD_METRICS, CRASH_TREND_DATA, CPU_DATA, MEMORY_DATA
 from desktop.icons import get_icon
+from desktop.system_metrics import get_all_metrics
 
 
 class DashboardScreen(ctk.CTkFrame):
@@ -60,8 +63,11 @@ class DashboardScreen(ctk.CTkFrame):
 
         right = ctk.CTkFrame(status_inner, fg_color="transparent")
         right.pack(side="right")
-        ctk.CTkLabel(right, text="*", font=ctk.CTkFont(size=14, weight="bold"), text_color=GREEN).pack(side="left", padx=(0, 4))
-        ctk.CTkLabel(right, text="Live", font=ctk.CTkFont(family=FONT_FAMILY, size=12), text_color=GREEN).pack(side="left")
+        # Pulsing green dot
+        ctk.CTkLabel(right, text="\u25CF", font=ctk.CTkFont(size=10, weight="bold"), text_color=GREEN).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(right, text="Live", font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"), text_color=GREEN).pack(side="left", padx=(0, 8))
+        self._live_time_label = ctk.CTkLabel(right, text="", font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color="#4ade80")
+        self._live_time_label.pack(side="left")
 
         # ── KPI Metric Cards ────────────────────────────────────
         cards_frame = ctk.CTkFrame(scroll, fg_color="transparent")
@@ -71,6 +77,8 @@ class DashboardScreen(ctk.CTkFrame):
 
         card_icon_names = ["crash_count", "recovery_time", "anomaly_score", "active_alerts"]
         self._metric_icons = []  # Keep references to prevent GC
+        self._metric_value_labels = []
+        self._metric_sub_labels = []
         keys = list(DASHBOARD_METRICS.keys())
         for col, (key, icon_name) in enumerate(zip(keys, card_icon_names)):
             m = DASHBOARD_METRICS[key]
@@ -85,8 +93,14 @@ class DashboardScreen(ctk.CTkFrame):
         charts_frame.columnconfigure(0, weight=1)
         charts_frame.columnconfigure(1, weight=1)
 
-        self._make_resource_chart(charts_frame, 0, "CPU Usage", CPU_DATA, ORANGE, "52%")
-        self._make_resource_chart(charts_frame, 1, "Memory Usage", MEMORY_DATA, AMBER, "68%")
+        self._resource_val_labels = []
+        self._make_resource_chart(charts_frame, 0, "CPU Usage", CPU_DATA, ORANGE, "--")
+        self._make_resource_chart(charts_frame, 1, "Memory Usage", MEMORY_DATA, AMBER, "--")
+
+        # ── Start real-time updates ─────────────────────────────
+        self._update_id = None
+        self._update_metrics()
+        self.bind("<Destroy>", self._on_destroy)
 
     def _make_metric_card(self, parent, col, icon_name, m):
         card = ctk.CTkFrame(parent, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
@@ -110,9 +124,18 @@ class DashboardScreen(ctk.CTkFrame):
         trend_bg = "#2a0f0f" if m["trend_up"] else "#0a2a14"
         ctk.CTkLabel(top, text=m["trend"], font=ctk.CTkFont(family=FONT_FAMILY, size=11, weight="bold"), text_color=trend_color, fg_color=trend_bg, corner_radius=8, width=50, height=26).pack(side="right")
 
-        ctk.CTkLabel(inner, text=m["value"], font=ctk.CTkFont(family=FONT_FAMILY, size=28, weight="bold"), text_color=TEXT_PRIMARY, anchor="w").pack(fill="x", pady=(10, 0))
+        val_lbl = ctk.CTkLabel(inner, text=m["value"], font=ctk.CTkFont(family=FONT_FAMILY, size=28, weight="bold"), text_color=TEXT_PRIMARY, anchor="w")
+        val_lbl.pack(fill="x", pady=(10, 0))
         ctk.CTkLabel(inner, text=m["label"], font=ctk.CTkFont(family=FONT_FAMILY, size=12), text_color=TEXT_SECONDARY, anchor="w").pack(fill="x")
-        ctk.CTkLabel(inner, text=m["sub"], font=ctk.CTkFont(family=FONT_FAMILY, size=10), text_color=TEXT_MUTED, anchor="w").pack(fill="x")
+        sub_lbl = ctk.CTkLabel(inner, text=m["sub"], font=ctk.CTkFont(family=FONT_FAMILY, size=10), text_color=TEXT_MUTED, anchor="w")
+        sub_lbl.pack(fill="x")
+
+        # Store references for real-time update
+        if not hasattr(self, '_metric_value_labels'):
+            self._metric_value_labels = []
+            self._metric_sub_labels = []
+        self._metric_value_labels.append((val_lbl, m))
+        self._metric_sub_labels.append(sub_lbl)
 
     def _make_chart_section(self, parent, title, data, key, color, ylabel, show_dots):
         card = ctk.CTkFrame(parent, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
@@ -160,18 +183,13 @@ class DashboardScreen(ctk.CTkFrame):
         ax = fig.add_subplot(111)
         ax.set_facecolor(BG_CARD)
 
-        times = [d["time"] for d in data]
-        vals = [d["usage"] for d in data]
-
-        ax.fill_between(range(len(vals)), vals, alpha=0.15, color=color)
-        ax.plot(range(len(vals)), vals, color=color, linewidth=2)
-        ax.set_xticks(range(len(times)))
-        ax.set_xticklabels(times, fontsize=7)
+        # Initial empty plot
         ax.set_ylim(0, 100)
         ax.tick_params(colors=TEXT_MUTED, labelsize=7)
         for spine in ax.spines.values():
             spine.set_color(BORDER)
         ax.grid(True, color="#1e1e2a", linewidth=0.5, alpha=0.5)
+        ax.set_ylabel("%", color=TEXT_MUTED, fontsize=8)
         fig.tight_layout(pad=1.2)
 
         canvas = FigureCanvasTkAgg(fig, master=card)
@@ -181,4 +199,108 @@ class DashboardScreen(ctk.CTkFrame):
         btm = ctk.CTkFrame(card, fg_color="transparent")
         btm.pack(fill="x", padx=20, pady=(0, 12))
         ctk.CTkLabel(btm, text="Current: ", font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_MUTED).pack(side="left")
-        ctk.CTkLabel(btm, text=current_val, font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"), text_color=color).pack(side="left")
+        rv_lbl = ctk.CTkLabel(btm, text=current_val, font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"), text_color=color)
+        rv_lbl.pack(side="left")
+
+        if not hasattr(self, '_resource_val_labels'):
+            self._resource_val_labels = []
+        self._resource_val_labels.append(rv_lbl)
+
+        # Store chart components for live updates
+        if not hasattr(self, '_chart_components'):
+            self._chart_components = []
+            self._chart_data = []
+        self._chart_components.append((fig, ax, canvas, color))
+        self._chart_data.append([])  # rolling data buffer
+
+    # ── Real-time update logic ──────────────────────────────────
+
+    def _update_metrics(self):
+        """Periodically update metric values with real system data."""
+        try:
+            metrics = get_all_metrics()
+            now = metrics["timestamp"]
+
+            # Update live timestamp
+            if hasattr(self, '_live_time_label'):
+                self._live_time_label.configure(text=f"Last update: {now}")
+
+            # Update metric card values with real data
+            real_values = [
+                str(metrics["process_count"]),
+                f"{metrics['uptime']}",
+                f"{metrics['cpu_percent']:.1f}%",
+                str(metrics["thread_count"]),
+            ]
+            for i, (lbl, m) in enumerate(self._metric_value_labels):
+                lbl.configure(text=real_values[i])
+
+            # Update sub-text with live info
+            sub_texts = [
+                f"PID count · {now}",
+                f"Since boot · {now}",
+                f"All cores · {now}",
+                f"All processes · {now}",
+            ]
+            for i, lbl in enumerate(self._metric_sub_labels):
+                lbl.configure(text=sub_texts[i])
+
+            # Update resource current values and charts
+            chart_values = [metrics["cpu_percent"], metrics["memory_percent"]]
+            for i, val in enumerate(chart_values):
+                if i < len(self._resource_val_labels):
+                    if i == 0:
+                        self._resource_val_labels[i].configure(text=f"{val:.1f}%")
+                    else:
+                        self._resource_val_labels[i].configure(
+                            text=f"{val:.1f}% ({metrics['memory_used_gb']}GB / {metrics['memory_total_gb']}GB)"
+                        )
+
+                # Update rolling chart data and redraw
+                if i < len(self._chart_data):
+                    buf = self._chart_data[i]
+                    buf.append(val)
+                    max_points = 20
+                    if len(buf) > max_points:
+                        buf[:] = buf[-max_points:]
+
+                    if i < len(self._chart_components):
+                        fig, ax, canvas, color = self._chart_components[i]
+                        ax.clear()
+                        ax.set_facecolor(BG_CARD)
+                        ax.set_ylim(0, 100)
+
+                        x = list(range(len(buf)))
+                        ax.fill_between(x, buf, alpha=0.15, color=color)
+                        ax.plot(x, buf, color=color, linewidth=2, marker="o",
+                                markersize=3, markerfacecolor=color)
+
+                        # X-axis: show seconds ago
+                        n = len(buf)
+                        labels = [f"-{(n - 1 - j) * 3}s" for j in range(n)]
+                        ax.set_xticks(x)
+                        ax.set_xticklabels(labels, fontsize=6, rotation=0)
+                        # Only show every 4th label to avoid crowding
+                        for j, label in enumerate(ax.xaxis.get_ticklabels()):
+                            if j % 4 != 0 and j != n - 1:
+                                label.set_visible(False)
+
+                        ax.tick_params(colors=TEXT_MUTED, labelsize=7)
+                        for spine in ax.spines.values():
+                            spine.set_color(BORDER)
+                        ax.grid(True, color="#1e1e2a", linewidth=0.5, alpha=0.5)
+                        ax.set_ylabel("%", color=TEXT_MUTED, fontsize=8)
+                        fig.tight_layout(pad=1.2)
+                        canvas.draw_idle()
+
+            # Schedule next update (3 seconds)
+            self._update_id = self.after(3000, self._update_metrics)
+        except Exception:
+            pass  # Widget destroyed
+
+    def _on_destroy(self, event):
+        """Cancel pending updates when widget is destroyed."""
+        if event.widget is self and self._update_id is not None:
+            self.after_cancel(self._update_id)
+            self._update_id = None
+

@@ -17,6 +17,7 @@ from desktop.theme import (
     TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER, FONT_FAMILY,
 )
 from desktop.data import CRASH_INCIDENT, LOG_ENTRIES, RESOURCE_METRICS
+from desktop.icons import get_icon
 
 
 class CrashDetailsScreen(ctk.CTkFrame):
@@ -27,6 +28,10 @@ class CrashDetailsScreen(ctk.CTkFrame):
 
         scroll = ctk.CTkScrollableFrame(self, fg_color=BG_ROOT, scrollbar_button_color="#1e2028", scrollbar_button_hover_color="#2a2c36")
         scroll.pack(fill="both", expand=True)
+        scroll.bind_all("<Button-4>", lambda e: scroll._parent_canvas.yview_scroll(-3, "units"))
+        scroll.bind_all("<Button-5>", lambda e: scroll._parent_canvas.yview_scroll(3, "units"))
+
+        self._icons_ref = []  # prevent GC
 
         inc = CRASH_INCIDENT
 
@@ -39,10 +44,12 @@ class CrashDetailsScreen(ctk.CTkFrame):
         top = ctk.CTkFrame(hi, fg_color="transparent")
         top.pack(fill="x")
 
+        icon_img = get_icon("crash_incident", size=22, color=RED)
+        self._icons_ref.append(icon_img)
         icon = ctk.CTkFrame(top, width=48, height=48, corner_radius=12, fg_color=RED_BG)
         icon.pack(side="left")
         icon.pack_propagate(False)
-        ctk.CTkLabel(icon, text="/!\\", font=ctk.CTkFont(family=FONT_FAMILY, size=16, weight="bold"), text_color=RED).pack(expand=True)
+        ctk.CTkLabel(icon, image=icon_img, text="").pack(expand=True)
 
         txt = ctk.CTkFrame(top, fg_color="transparent")
         txt.pack(side="left", padx=(12, 0))
@@ -76,7 +83,9 @@ class CrashDetailsScreen(ctk.CTkFrame):
 
         h = ctk.CTkFrame(si, fg_color="transparent")
         h.pack(fill="x")
-        ctk.CTkLabel(h, text="[i]", font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"), text_color=ORANGE).pack(side="left")
+        info_icon = get_icon("info_circle", size=18, color=ORANGE)
+        self._icons_ref.append(info_icon)
+        ctk.CTkLabel(h, image=info_icon, text="").pack(side="left")
         ctk.CTkLabel(h, text="  Crash Summary", font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"), text_color=TEXT_PRIMARY).pack(side="left")
 
         ctk.CTkLabel(si, text=inc["summary"], font=ctk.CTkFont(family=FONT_FAMILY, size=12), text_color=TEXT_SECONDARY, wraplength=700, justify="left").pack(fill="x", pady=(8, 0))

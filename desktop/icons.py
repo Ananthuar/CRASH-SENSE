@@ -437,25 +437,171 @@ def _draw_active_alerts(size: int, color: str) -> Image.Image:
     return _finish(img, size)
 
 
+def _draw_thresholds(size: int, color: str) -> Image.Image:
+    """Horizontal slider bars — alert thresholds icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.06))
+    pad_l = int(s * 0.15)
+    pad_r = int(s * 0.85)
+    for i, (frac, knob_frac) in enumerate([(0.30, 0.55), (0.50, 0.35), (0.70, 0.70)]):
+        y = int(s * frac)
+        draw.line([(pad_l, y), (pad_r, y)], fill=_hex_to_rgba(color, 80), width=max(2, lw))
+        kx = int(s * knob_frac)
+        draw.line([(pad_l, y), (kx, y)], fill=c, width=max(2, lw))
+        kr = int(s * 0.06)
+        draw.ellipse([kx - kr, y - kr, kx + kr, y + kr], fill=c)
+    return _finish(img, size)
+
+
+def _draw_ml_brain(size: int, color: str) -> Image.Image:
+    """Brain/circuit — ML prediction icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.06))
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.32)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=c, width=lw)
+    draw.line([(cx - int(r * 0.5), cy), (cx + int(r * 0.5), cy)], fill=c, width=lw)
+    draw.line([(cx, cy - int(r * 0.5)), (cx, cy + int(r * 0.5))], fill=c, width=lw)
+    nr = int(s * 0.04)
+    for dx, dy in [(-0.5, 0), (0.5, 0), (0, -0.5), (0, 0.5)]:
+        nx = cx + int(r * dx)
+        ny = cy + int(r * dy)
+        draw.ellipse([nx - nr, ny - nr, nx + nr, ny + nr], fill=c)
+    draw.line([(cx - int(r * 0.35), cy - int(r * 0.35)), (cx, cy)], fill=c, width=max(1, lw // 2))
+    draw.line([(cx + int(r * 0.35), cy + int(r * 0.35)), (cx, cy)], fill=c, width=max(1, lw // 2))
+    return _finish(img, size)
+
+
+def _draw_notification_bell(size: int, color: str) -> Image.Image:
+    """Bell with notification dot — notification settings icon."""
+    img = _draw_alerts(size, color)
+    # Add a notification dot on top-right
+    draw = ImageDraw.Draw(img, "RGBA")
+    c = _hex_to_rgba(color)
+    dot_r = max(2, int(size * 0.08))
+    dot_x = int(size * 0.72)
+    dot_y = int(size * 0.18)
+    draw.ellipse([dot_x - dot_r, dot_y - dot_r, dot_x + dot_r, dot_y + dot_r], fill=c)
+    return img
+
+
+def _draw_user_group(size: int, color: str) -> Image.Image:
+    """Two people silhouettes — user management icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.06))
+    # Front person
+    cx1, head_r = int(s * 0.40), int(s * 0.10)
+    head_y = int(s * 0.28)
+    draw.ellipse([cx1 - head_r, head_y - head_r, cx1 + head_r, head_y + head_r], outline=c, width=lw)
+    body_top = head_y + head_r + int(s * 0.04)
+    body_half = int(s * 0.15)
+    draw.arc([cx1 - body_half, body_top, cx1 + body_half, body_top + int(s * 0.30)],
+             start=0, end=180, fill=c, width=lw)
+    # Back person
+    cx2 = int(s * 0.62)
+    draw.ellipse([cx2 - head_r, head_y - int(s * 0.03) - head_r, cx2 + head_r, head_y - int(s * 0.03) + head_r], outline=c, width=lw)
+    draw.arc([cx2 - body_half, body_top - int(s * 0.03), cx2 + body_half, body_top + int(s * 0.27)],
+             start=0, end=180, fill=c, width=lw)
+    return _finish(img, size)
+
+
+def _draw_shield_lock(size: int, color: str) -> Image.Image:
+    """Shield with lock — account security icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.06))
+    pts = [
+        (int(s * 0.50), int(s * 0.10)),
+        (int(s * 0.85), int(s * 0.28)),
+        (int(s * 0.78), int(s * 0.62)),
+        (int(s * 0.50), int(s * 0.88)),
+        (int(s * 0.22), int(s * 0.62)),
+        (int(s * 0.15), int(s * 0.28)),
+    ]
+    draw.polygon(pts, outline=c, width=lw)
+    cx = s // 2
+    lock_w, lock_h = int(s * 0.14), int(s * 0.12)
+    lock_y = int(s * 0.48)
+    draw.rounded_rectangle([cx - lock_w, lock_y, cx + lock_w, lock_y + lock_h],
+                           radius=int(s * 0.03), outline=c, width=lw)
+    shackle_r = int(s * 0.08)
+    draw.arc([cx - shackle_r, lock_y - shackle_r * 2, cx + shackle_r, lock_y],
+             start=180, end=0, fill=c, width=lw)
+    return _finish(img, size)
+
+
+def _draw_crash_incident(size: int, color: str) -> Image.Image:
+    """Lightning bolt — crash incident icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    bolt_pts = [
+        (int(s * 0.55), int(s * 0.10)),
+        (int(s * 0.30), int(s * 0.48)),
+        (int(s * 0.48), int(s * 0.48)),
+        (int(s * 0.42), int(s * 0.90)),
+        (int(s * 0.72), int(s * 0.45)),
+        (int(s * 0.52), int(s * 0.45)),
+    ]
+    draw.polygon(bolt_pts, fill=c)
+    return _finish(img, size)
+
+
+def _draw_info_circle(size: int, color: str) -> Image.Image:
+    """Circle with 'i' — info / summary icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.06))
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.36)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=c, width=lw)
+    dot_r = int(s * 0.045)
+    dot_y = int(s * 0.32)
+    draw.ellipse([cx - dot_r, dot_y - dot_r, cx + dot_r, dot_y + dot_r], fill=c)
+    draw.line([(cx, int(s * 0.42)), (cx, int(s * 0.68))], fill=c, width=lw + 1)
+    return _finish(img, size)
+
+
+def _draw_dropdown_arrow(size: int, color: str) -> Image.Image:
+    """Chevron down — dropdown arrow icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.07))
+    cx = s // 2
+    draw.line([(int(s * 0.25), int(s * 0.38)), (cx, int(s * 0.62))], fill=c, width=lw)
+    draw.line([(cx, int(s * 0.62)), (int(s * 0.75), int(s * 0.38))], fill=c, width=lw)
+    return _finish(img, size)
+
+
 # ═══════════════════════════════════════════════════════════════
 #  ICON REGISTRY & PUBLIC API
 # ═══════════════════════════════════════════════════════════════
 
 _ICON_MAP = {
-    "dashboard":     _draw_dashboard,
-    "alerts":        _draw_alerts,
-    "crash-details": _draw_crash_details,
-    "logs":          _draw_logs,
-    "prediction":    _draw_prediction,
-    "settings":      _draw_settings,
-    "logout":        _draw_logout,
-    "bell":          _draw_bell,
-    "power":         _draw_power,
-    "back_arrow":    _draw_back_arrow,
-    "crash_count":   _draw_crash_count,
-    "recovery_time": _draw_recovery_time,
-    "anomaly_score": _draw_anomaly_score,
-    "active_alerts": _draw_active_alerts,
+    "dashboard":         _draw_dashboard,
+    "alerts":            _draw_alerts,
+    "crash-details":     _draw_crash_details,
+    "logs":              _draw_logs,
+    "prediction":        _draw_prediction,
+    "settings":          _draw_settings,
+    "logout":            _draw_logout,
+    "bell":              _draw_bell,
+    "power":             _draw_power,
+    "back_arrow":        _draw_back_arrow,
+    "crash_count":       _draw_crash_count,
+    "recovery_time":     _draw_recovery_time,
+    "anomaly_score":     _draw_anomaly_score,
+    "active_alerts":     _draw_active_alerts,
+    "thresholds":        _draw_thresholds,
+    "ml_brain":          _draw_ml_brain,
+    "notification_bell": _draw_notification_bell,
+    "user_group":        _draw_user_group,
+    "shield_lock":       _draw_shield_lock,
+    "crash_incident":    _draw_crash_incident,
+    "info_circle":       _draw_info_circle,
+    "dropdown_arrow":    _draw_dropdown_arrow,
 }
 
 # Cache to avoid regenerating the same icon multiple times
@@ -482,3 +628,4 @@ def get_icon(name: str, size: int = 20, color: str = "#9ca3af") -> ctk.CTkImage:
         pil_img = draw_fn(size, color)
         _cache[key] = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(size, size))
     return _cache[key]
+
