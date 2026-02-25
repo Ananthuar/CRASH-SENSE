@@ -1,0 +1,16 @@
+# Secrets — never commit
+.env
+backend/firebase_service_account.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/

@@ -28,6 +28,7 @@ from desktop.theme import (
     TEXT_PRIMARY, TEXT_SECONDARY, FONT_FAMILY,
 )
 from desktop.icons import get_icon
+from desktop import session
 
 
 class TopBar(ctk.CTkFrame):
@@ -53,14 +54,16 @@ class TopBar(ctk.CTkFrame):
         "logs":          "System Logs",
         "prediction":    "Prediction",
         "settings":      "Settings",
+        "profile":       "My Profile",
     }
 
-    def __init__(self, master, on_logout, on_back=None, **kwargs):
+    def __init__(self, master, on_logout, on_back=None, on_profile=None, **kwargs):
         super().__init__(master, height=72, fg_color=BG_TOPBAR, corner_radius=0, **kwargs)
         self.pack_propagate(False)    # Enforce fixed 72px height
 
         self._on_logout = on_logout
         self._on_back = on_back
+        self._on_profile = on_profile
 
         # Keep icon references to prevent garbage collection
         self._icons = {}
@@ -134,15 +137,20 @@ class TopBar(ctk.CTkFrame):
         )
         logout_btn.pack(side="left", padx=4)
 
-        # User avatar (initials badge)
-        avatar = ctk.CTkFrame(right, width=40, height=40, corner_radius=10, fg_color=ORANGE)
-        avatar.pack(side="left", padx=(4, 0))
-        avatar.pack_propagate(False)
-        ctk.CTkLabel(
-            avatar, text="AD",
+        # User avatar (initials badge — dynamic from session)
+        initials = session.get_initials()
+        self._avatar_frame = ctk.CTkFrame(right, width=40, height=40, corner_radius=10,
+                                          fg_color=ORANGE, cursor="hand2")
+        self._avatar_frame.pack(side="left", padx=(4, 0))
+        self._avatar_frame.pack_propagate(False)
+        self._avatar_label = ctk.CTkLabel(
+            self._avatar_frame, text=initials,
             font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
             text_color="#ffffff",
-        ).pack(expand=True)
+        )
+        self._avatar_label.pack(expand=True)
+        self._avatar_frame.bind("<Button-1>", lambda e: self._handle_profile())
+        self._avatar_label.bind("<Button-1>", lambda e: self._handle_profile())
 
     # ── Public API ──────────────────────────────────────────────
 
@@ -164,9 +172,18 @@ class TopBar(ctk.CTkFrame):
             # Re-pack the back button before the title frame
             self._back_btn.pack(side="left", padx=(0, 12), before=self._title.master)
 
+    def update_avatar(self):
+        """Refresh the avatar initials from the current session (call after login)."""
+        self._avatar_label.configure(text=session.get_initials())
+
     # ── Private Helpers ─────────────────────────────────────────
 
     def _handle_back(self):
         """Invoke the on_back callback (typically navigates to dashboard)."""
         if self._on_back:
             self._on_back()
+
+    def _handle_profile(self):
+        """Navigate to the profile screen."""
+        if self._on_profile:
+            self._on_profile()

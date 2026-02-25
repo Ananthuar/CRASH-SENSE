@@ -73,5 +73,6 @@ NAV_ITEMS = [
     {"id": "crash-details", "label": "Crash Details", "icon": "\u24D8"},
     {"id": "logs",          "label": "Logs",          "icon": "\u2630"},
     {"id": "prediction",    "label": "Prediction",    "icon": "\u25CE"},
+    {"id": "profile",       "label": "My Profile",    "icon": "\u25CF"},
     {"id": "settings",      "label": "Settings",      "icon": "\u2699"},
 ]

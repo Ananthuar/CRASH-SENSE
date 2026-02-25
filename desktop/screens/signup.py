@@ -1,110 +1,248 @@
 """
-CrashSense — Sign Up Screen
-============================
+CrashSense — Signup Screen
+===========================
 
-Full-screen registration view accessible from the login screen.
+Email + Password signup — everything happens inside the desktop app.
+Google Sign-In available as a secondary browser-based option.
+Sends email verification after account creation.
 """
 
 import customtkinter as ctk
-from desktop.theme import (
-    BG_ROOT, ORANGE, TEXT_PRIMARY, TEXT_SECONDARY,
-    TEXT_MUTED, BG_INPUT, BORDER, FONT_FAMILY,
-)
+import threading
+from desktop import auth
+from desktop import theme
 
 
 class SignUpScreen(ctk.CTkFrame):
-    """Full-screen sign-up page with centered registration card."""
+    """Signup screen with in-app email/password form."""
 
-    def __init__(self, master, on_signup, on_back_to_login, **kwargs):
-        super().__init__(master, fg_color=BG_ROOT, **kwargs)
+    def __init__(self, parent, on_signup, on_back_to_login):
+        super().__init__(parent, fg_color=theme.BG_ROOT)
+        self.on_signup_success = on_signup
+        self.switch_to_login = on_back_to_login
+        self._build_ui()
 
-        self._on_signup = on_signup
-        self._on_back_to_login = on_back_to_login
-
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-
-        card = ctk.CTkFrame(
-            self, width=420, fg_color="#111318",
-            corner_radius=24, border_width=1, border_color="#1e2028",
+    def _build_ui(self):
+        # Scrollable container
+        container = ctk.CTkScrollableFrame(
+            self, fg_color="transparent",
+            scrollbar_button_color=theme.BG_CARD,
+            scrollbar_button_hover_color=theme.ORANGE,
         )
-        card.grid(row=0, column=0)
-        card.grid_propagate(False)
-        card.configure(width=420, height=640)
+        container.pack(fill="both", expand=True, padx=40, pady=30)
 
-        inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(expand=True, fill="both", padx=40, pady=32)
-
-        # Branding
-        logo = ctk.CTkFrame(inner, width=64, height=64, corner_radius=16, fg_color=ORANGE)
-        logo.pack(pady=(0, 12))
-        logo.pack_propagate(False)
-        ctk.CTkLabel(logo, text="CS", font=ctk.CTkFont(family=FONT_FAMILY, size=22, weight="bold"), text_color="#ffffff").pack(expand=True)
-
+        # Header
         ctk.CTkLabel(
-            inner, text="Create New Account",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=20, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack()
+            container, text="Create Account",
+            font=ctk.CTkFont(size=28, weight="bold"), text_color=theme.TEXT_PRIMARY,
+        ).pack(pady=(20, 2))
         ctk.CTkLabel(
-            inner, text="Join the Security Operations Center",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=11),
-            text_color=TEXT_MUTED,
-        ).pack(pady=(2, 16))
+            container, text="Join CrashSense today",
+            font=ctk.CTkFont(size=14), text_color=theme.TEXT_SECONDARY,
+        ).pack(pady=(0, 24))
 
-        # Form fields
-        fields = [
-            ("Full Name",         "John Doe",                  False),
-            ("Email Address",     "john.doe@company.com",      False),
-            ("Password",          "Create a strong password",  True),
-            ("Confirm Password",  "Re-enter your password",    True),
-        ]
-        self._entries = []
-        for label, placeholder, is_password in fields:
-            ctk.CTkLabel(
-                inner, text=label,
-                font=ctk.CTkFont(family=FONT_FAMILY, size=12),
-                text_color=TEXT_SECONDARY, anchor="w",
-            ).pack(fill="x")
-            entry = ctk.CTkEntry(
-                inner, height=42, corner_radius=12,
-                fg_color=BG_INPUT, border_color=BORDER,
-                placeholder_text=placeholder,
-                font=ctk.CTkFont(family=FONT_FAMILY, size=13),
-                text_color=TEXT_PRIMARY,
-                show="*" if is_password else "",
-            )
-            entry.pack(fill="x", pady=(4, 10))
-            self._entries.append(entry)
+        # ── Signup Form Card ────────────────────────────────────
+        form_card = ctk.CTkFrame(container, fg_color=theme.BG_CARD, corner_radius=12)
+        form_card.pack(fill="x", pady=(0, 16))
 
-        # Create Account button
+        # Display Name
+        ctk.CTkLabel(
+            form_card, text="Display Name",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=theme.TEXT_SECONDARY,
+        ).pack(padx=24, pady=(24, 6), anchor="w")
+
+        self.name_entry = ctk.CTkEntry(
+            form_card, height=42, corner_radius=8,
+            fg_color=theme.BG_INPUT, border_color=theme.BORDER,
+            text_color=theme.TEXT_PRIMARY, placeholder_text="Your name",
+            placeholder_text_color=theme.TEXT_DARK, border_width=1,
+            font=ctk.CTkFont(size=14),
+        )
+        self.name_entry.pack(fill="x", padx=24, pady=(0, 12))
+
+        # Email
+        ctk.CTkLabel(
+            form_card, text="Email Address",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=theme.TEXT_SECONDARY,
+        ).pack(padx=24, pady=(4, 6), anchor="w")
+
+        self.email_entry = ctk.CTkEntry(
+            form_card, height=42, corner_radius=8,
+            fg_color=theme.BG_INPUT, border_color=theme.BORDER,
+            text_color=theme.TEXT_PRIMARY, placeholder_text="you@example.com",
+            placeholder_text_color=theme.TEXT_DARK, border_width=1,
+            font=ctk.CTkFont(size=14),
+        )
+        self.email_entry.pack(fill="x", padx=24, pady=(0, 12))
+
+        # Password
+        ctk.CTkLabel(
+            form_card, text="Password",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=theme.TEXT_SECONDARY,
+        ).pack(padx=24, pady=(4, 6), anchor="w")
+
+        self.password_entry = ctk.CTkEntry(
+            form_card, height=42, corner_radius=8, show="\u2022",
+            fg_color=theme.BG_INPUT, border_color=theme.BORDER,
+            text_color=theme.TEXT_PRIMARY, placeholder_text="Min 6 characters",
+            placeholder_text_color=theme.TEXT_DARK, border_width=1,
+            font=ctk.CTkFont(size=14),
+        )
+        self.password_entry.pack(fill="x", padx=24, pady=(0, 12))
+
+        # Confirm Password
+        ctk.CTkLabel(
+            form_card, text="Confirm Password",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=theme.TEXT_SECONDARY,
+        ).pack(padx=24, pady=(4, 6), anchor="w")
+
+        self.confirm_entry = ctk.CTkEntry(
+            form_card, height=42, corner_radius=8, show="\u2022",
+            fg_color=theme.BG_INPUT, border_color=theme.BORDER,
+            text_color=theme.TEXT_PRIMARY, placeholder_text="Repeat password",
+            placeholder_text_color=theme.TEXT_DARK, border_width=1,
+            font=ctk.CTkFont(size=14),
+        )
+        self.confirm_entry.pack(fill="x", padx=24, pady=(0, 20))
+
+        # Sign Up button
         ctk.CTkButton(
-            inner, text="Create Account  ->", height=44, corner_radius=12,
-            fg_color=ORANGE, hover_color="#ea6c10",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"),
-            command=self._on_signup,
-        ).pack(fill="x", pady=(8, 12))
+            form_card, text="Create Account", height=44, corner_radius=10,
+            fg_color=theme.ORANGE, hover_color=theme.AMBER,
+            text_color="white", font=ctk.CTkFont(size=15, weight="bold"),
+            command=self._do_email_signup,
+        ).pack(fill="x", padx=24, pady=(0, 24))
 
-        # Back to login link
-        back_frame = ctk.CTkFrame(inner, fg_color="transparent")
-        back_frame.pack()
+        # ── Divider ────────────────────────────────────────────
+        divider_frame = ctk.CTkFrame(container, fg_color="transparent", height=30)
+        divider_frame.pack(fill="x", pady=(4, 4))
+        ctk.CTkFrame(divider_frame, fg_color=theme.BORDER, height=1).place(
+            relx=0, rely=0.5, relwidth=0.4)
         ctk.CTkLabel(
-            back_frame, text="<- Already have an account?",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=12),
-            text_color=TEXT_MUTED,
-        ).pack(side="left")
+            divider_frame, text="OR", font=ctk.CTkFont(size=11),
+            text_color=theme.TEXT_MUTED, fg_color="transparent",
+        ).place(relx=0.5, rely=0.5, anchor="center")
+        ctk.CTkFrame(divider_frame, fg_color=theme.BORDER, height=1).place(
+            relx=0.6, rely=0.5, relwidth=0.4)
+
+        # ── Google button ──────────────────────────────────────
         ctk.CTkButton(
-            back_frame, text="Login", width=50,
-            fg_color="transparent", hover_color=BG_ROOT,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
-            text_color=ORANGE,
-            command=self._on_back_to_login,
+            container, text="\u25CF  Continue with Google", height=44,
+            corner_radius=10,
+            fg_color=theme.BG_CARD, hover_color=theme.BG_HOVER,
+            border_color=theme.BORDER, border_width=1,
+            text_color=theme.TEXT_PRIMARY, font=ctk.CTkFont(size=14),
+            command=self._do_google_signup,
+        ).pack(fill="x", pady=(0, 16))
+
+        # ── Success / Error / Status ───────────────────────────
+        self.success_label = ctk.CTkLabel(
+            container, text="", font=ctk.CTkFont(size=13),
+            text_color=theme.GREEN, wraplength=380,
+        )
+        self.success_label.pack(pady=(0, 4))
+
+        self.error_label = ctk.CTkLabel(
+            container, text="", font=ctk.CTkFont(size=13),
+            text_color=theme.RED, wraplength=380,
+        )
+        self.error_label.pack(pady=(0, 4))
+
+        self.status_label = ctk.CTkLabel(
+            container, text="", font=ctk.CTkFont(size=12),
+            text_color=theme.TEXT_MUTED, wraplength=380,
+        )
+        self.status_label.pack(pady=(0, 10))
+
+        # ── Login link ─────────────────────────────────────────
+        login_frame = ctk.CTkFrame(container, fg_color="transparent")
+        login_frame.pack(pady=(5, 20))
+        ctk.CTkLabel(
+            login_frame, text="Already have an account?",
+            font=ctk.CTkFont(size=13), text_color=theme.TEXT_SECONDARY,
+        ).pack(side="left", padx=(0, 5))
+        ctk.CTkButton(
+            login_frame, text="Log In", width=60,
+            fg_color="transparent", hover_color=theme.BG_HOVER,
+            text_color=theme.ORANGE, font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.switch_to_login,
         ).pack(side="left")
 
-        # Footer
-        ctk.CTkFrame(inner, height=1, fg_color=BORDER).pack(fill="x", pady=(12, 8))
-        ctk.CTkLabel(
-            inner, text="By signing up, you agree to our Terms of Service",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=10),
-            text_color=TEXT_MUTED,
-        ).pack()
+        # Bind Enter key
+        self.confirm_entry.bind("<Return>", lambda e: self._do_email_signup())
+
+    def _show_error(self, msg):
+        self.success_label.configure(text="")
+        self.status_label.configure(text="")
+        self.error_label.configure(text=msg)
+
+    def _show_status(self, msg):
+        self.success_label.configure(text="")
+        self.error_label.configure(text="")
+        self.status_label.configure(text=msg)
+
+    def _show_success(self, msg):
+        self.error_label.configure(text="")
+        self.status_label.configure(text="")
+        self.success_label.configure(text=msg)
+
+    # ── Email + Password Signup ─────────────────────────────────
+    def _do_email_signup(self):
+        name     = self.name_entry.get().strip()
+        email    = self.email_entry.get().strip()
+        password = self.password_entry.get()
+        confirm  = self.confirm_entry.get()
+
+        if not name:
+            self._show_error("Please enter your name.")
+            return
+        if not email:
+            self._show_error("Please enter your email address.")
+            return
+        if not password:
+            self._show_error("Please enter a password.")
+            return
+        if len(password) < 6:
+            self._show_error("Password must be at least 6 characters.")
+            return
+        if password != confirm:
+            self._show_error("Passwords do not match.")
+            return
+
+        self._show_status("Creating account...")
+
+        def _run():
+            try:
+                user = auth.sign_up_email_password(email, password, name)
+                # Show success message — user needs to verify email first
+                self.after(0, lambda: self._show_success(
+                    "Account created! A verification email has been sent to "
+                    f"{email}. Please check your inbox and click the link, "
+                    "then come back and log in."
+                ))
+            except auth.AuthError as exc:
+                err_msg = str(exc)
+                self.after(0, lambda: self._show_error(err_msg))
+            except Exception as exc:
+                err_msg = f"Unexpected error: {exc}"
+                self.after(0, lambda: self._show_error(err_msg))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # ── Google Signup ───────────────────────────────────────────
+    def _do_google_signup(self):
+        self._show_status("Opening browser for Google sign-in...")
+
+        def _run():
+            try:
+                user = auth.sign_in_with_google()
+                self.after(0, lambda: self.status_label.configure(text=""))
+                self.after(0, lambda: self.on_signup_success(user))
+            except auth.AuthError as exc:
+                err_msg = str(exc)
+                self.after(0, lambda: self._show_error(err_msg))
+            except Exception as exc:
+                err_msg = f"Unexpected error: {exc}"
+                self.after(0, lambda: self._show_error(err_msg))
+
+        threading.Thread(target=_run, daemon=True).start()

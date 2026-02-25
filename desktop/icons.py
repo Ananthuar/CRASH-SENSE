@@ -575,6 +575,32 @@ def _draw_dropdown_arrow(size: int, color: str) -> Image.Image:
     return _finish(img, size)
 
 
+def _draw_profile(size: int, color: str) -> Image.Image:
+    """Single person silhouette inside a circle — profile / user icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.06))
+    cx = s // 2
+
+    # Outer circle
+    outer_r = int(s * 0.40)
+    cy_c = s // 2
+    draw.ellipse([cx - outer_r, cy_c - outer_r, cx + outer_r, cy_c + outer_r], outline=c, width=lw)
+
+    # Head
+    head_r = int(s * 0.11)
+    head_cy = int(s * 0.33)
+    draw.ellipse([cx - head_r, head_cy - head_r, cx + head_r, head_cy + head_r], outline=c, width=lw)
+
+    # Shoulders arc (lower body)
+    body_half = int(s * 0.20)
+    body_top = int(s * 0.50)
+    draw.arc([cx - body_half, body_top, cx + body_half, body_top + int(s * 0.26)],
+             start=180, end=360, fill=c, width=lw)
+
+    return _finish(img, size)
+
+
 # ═══════════════════════════════════════════════════════════════
 #  ICON REGISTRY & PUBLIC API
 # ═══════════════════════════════════════════════════════════════
@@ -602,6 +628,7 @@ _ICON_MAP = {
     "crash_incident":    _draw_crash_incident,
     "info_circle":       _draw_info_circle,
     "dropdown_arrow":    _draw_dropdown_arrow,
+    "profile":           _draw_profile,
 }
 
 # Cache to avoid regenerating the same icon multiple times

@@ -54,6 +54,8 @@ from desktop.screens.crash_details import CrashDetailsScreen
 from desktop.screens.logs import LogsScreen
 from desktop.screens.prediction import PredictionScreen
 from desktop.screens.settings import SettingsScreen
+from desktop.screens.profile import ProfileScreen
+from desktop import session
 
 
 class CrashSenseApp(ctk.CTk):
@@ -124,6 +126,7 @@ class CrashSenseApp(ctk.CTk):
             right,
             on_logout=self._handle_logout,
             on_back=self._go_dashboard,
+            on_profile=lambda: self._navigate("profile"),
         )
         self._topbar.pack(fill="x")
 
@@ -150,11 +153,15 @@ class CrashSenseApp(ctk.CTk):
         self._main_frame.pack_forget()
         self._signup_screen.pack(fill="both", expand=True)
 
-    def _handle_login(self):
+    def _handle_login(self, user: dict = None):
         """
         Callback triggered on successful login or 'Demo Mode'.
+        Accepts a user dict from auth (or None for backward compat).
         Hides auth screens and shows the main dashboard layout.
         """
+        if user:
+            session.set_user(user)
+        self._topbar.update_avatar()
         self._login_screen.pack_forget()
         self._signup_screen.pack_forget()
         self._main_frame.pack(fill="both", expand=True)
@@ -163,9 +170,10 @@ class CrashSenseApp(ctk.CTk):
     def _handle_logout(self):
         """
         End the current session.
-        Destroys the active screen widget to free memory, hides the main
-        layout, and returns to the login screen.
+        Clears auth session, destroys the active screen widget, and returns
+        to the login screen.
         """
+        session.clear_user()
         if self._current_screen_widget:
             self._current_screen_widget.destroy()
             self._current_screen_widget = None
@@ -212,6 +220,7 @@ class CrashSenseApp(ctk.CTk):
             "crash-details": lambda: CrashDetailsScreen(self._content_frame),
             "logs":          lambda: LogsScreen(self._content_frame),
             "prediction":    lambda: PredictionScreen(self._content_frame),
+            "profile":       lambda: ProfileScreen(self._content_frame),
             "settings":      lambda: SettingsScreen(self._content_frame, on_logout=self._handle_logout),
         }
 

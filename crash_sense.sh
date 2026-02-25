@@ -94,7 +94,43 @@ else
     pip install --quiet customtkinter matplotlib numpy
 fi
 
-# ── Step 4: Launch the Application ─────────────────────────────
+# ── Step 4: Start the Backend Server ───────────────────────────
+info "Starting Flask backend server on port 5000..."
+BACKEND_PID=""
+
+# Kill any stale process on port 5000 from a previous run
+if command -v fuser &>/dev/null; then
+    fuser -k 5000/tcp 2>/dev/null && sleep 1 || true
+fi
+
+cleanup() {
+    if [[ -n "$BACKEND_PID" ]] && kill -0 "$BACKEND_PID" 2>/dev/null; then
+        info "Stopping backend server (PID $BACKEND_PID)..."
+        kill "$BACKEND_PID" 2>/dev/null || true
+        wait "$BACKEND_PID" 2>/dev/null || true
+    fi
+    info "Application closed. Goodbye!"
+}
+trap cleanup EXIT
+
+cd "$SCRIPT_DIR/backend"
+"$PYTHON" -c "
+from app import create_app
+import os, sys
+app = create_app(os.environ.get('FLASK_CONFIG', 'default'))
+app.run(host='0.0.0.0', port=5000, use_reloader=False)
+" &
+BACKEND_PID=$!
+
+# Wait a moment for the backend to start, then verify
+sleep 2
+if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+    error "Backend server failed to start. Check your Firebase config."
+    exit 1
+fi
+info "Backend server running (PID $BACKEND_PID)."
+
+# ── Step 5: Launch the Desktop Application ─────────────────────
 info "Starting CrashSense Desktop Application..."
 echo ""
 echo "  ╔═══════════════════════════════════════╗"
@@ -105,6 +141,3 @@ echo ""
 
 cd "$SCRIPT_DIR"
 "$PYTHON" -m "$APP_MODULE"
-
-# ── Cleanup on Exit ─────────────────────────────────────────────
-info "Application closed. Goodbye!"

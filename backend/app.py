@@ -17,6 +17,9 @@ Architecture:
               GET  /api/status            → Monitoring status
               GET  /api/metrics/current   → Latest system metrics
                    ?normalized=true       → Returns 0-1 normalised values
+              GET  /auth/google           → Firebase Google Sign-In page
+              GET  /auth/phone            → Firebase Phone Sign-In page
+              GET  /auth/email            → Firebase Email Link Sign-In page
 
 Dependencies:
     - SystemMonitor (core/collector.py)  — provides live metrics
@@ -31,11 +34,27 @@ Usage:
 """
 
 import os
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template_string
 from flask_cors import CORS
+from dotenv import load_dotenv
 from config import config
 from core.collector import system_monitor
 from core.preprocessor import data_scaler
+from core.crash_predictor import crash_predictor
+from core.process_monitor import process_monitor
+import firebase_service
+from auth_html import GOOGLE_AUTH_HTML, PHONE_AUTH_HTML, EMAIL_LINK_AUTH_HTML
+
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+load_dotenv()  # also pick up backend/.env if present
+FIREBASE_WEB_API_KEY = os.getenv("FIREBASE_WEB_API_KEY", "")
+FIREBASE_AUTH_DOMAIN = os.getenv("FIREBASE_AUTH_DOMAIN", "")
+FIREBASE_PROJECT_ID  = os.getenv("FIREBASE_PROJECT_ID", "")
+
+# Private aliases for render_template_string
+_GOOGLE_AUTH_HTML = GOOGLE_AUTH_HTML
+_PHONE_AUTH_HTML  = PHONE_AUTH_HTML
+_EMAIL_LINK_HTML  = EMAIL_LINK_AUTH_HTML
 
 
 def create_app(config_name=None):
@@ -63,6 +82,89 @@ def create_app(config_name=None):
     # Start the background metrics collection thread.
     # Polls CPU, memory, disk I/O, and network I/O every 0.5 seconds.
     system_monitor.start()
+
+    # Start the per-process crash detection monitor.
+    process_monitor.start()
+
+    # Initialise Firebase Admin SDK (Firestore)
+    firebase_service.init_firebase()
+
+    # ── Route: Google Auth Page ──────────────────────────────────
+    @app.route('/auth/google')
+    def google_auth_page():
+        """Browser page that handles Google Sign-In via Firebase JS SDK."""
+        callback_url = request.args.get('callback', 'http://localhost:5557')
+        return render_template_string(_GOOGLE_AUTH_HTML,
+                                      api_key=FIREBASE_WEB_API_KEY,
+                                      auth_domain=FIREBASE_AUTH_DOMAIN,
+                                      project_id=FIREBASE_PROJECT_ID,
+                                      callback_url=callback_url)
+
+    # ── Route: Phone Auth Page ───────────────────────────────────
+    @app.route('/auth/phone')
+    def phone_auth_page():
+        """Browser page that handles Phone Sign-In via Firebase JS SDK."""
+        callback_url = request.args.get('callback', 'http://localhost:5557')
+        return render_template_string(_PHONE_AUTH_HTML,
+                                      api_key=FIREBASE_WEB_API_KEY,
+                                      auth_domain=FIREBASE_AUTH_DOMAIN,
+                                      project_id=FIREBASE_PROJECT_ID,
+                                      callback_url=callback_url)
+
+    # ── Route: Email Link Auth Page ──────────────────────────────
+    @app.route('/auth/email')
+    def email_auth_page():
+        """Browser page for passwordless email link sign-in via Firebase."""
+        callback_url = request.args.get('callback', 'http://localhost:5557')
+        return render_template_string(_EMAIL_LINK_HTML,
+                                      api_key=FIREBASE_WEB_API_KEY,
+                                      auth_domain=FIREBASE_AUTH_DOMAIN,
+                                      project_id=FIREBASE_PROJECT_ID,
+                                      callback_url=callback_url)
+
+    # ── Route: User Profile (Create) ────────────────────────────
+    @app.route('/api/users/<uid>/profile', methods=['POST'])
+    def create_user_profile(uid):
+        """Create a Firestore profile document for a new user."""
+        data = request.get_json(force=True, silent=True) or {}
+        try:
+            profile = firebase_service.create_user_profile(uid, data)
+            return jsonify(profile), 201
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    # ── Route: User Profile (Get) ────────────────────────────────
+    @app.route('/api/users/<uid>/profile', methods=['GET'])
+    def get_user_profile(uid):
+        """Fetch a user's Firestore profile."""
+        try:
+            profile = firebase_service.get_user_profile(uid)
+            if profile is None:
+                return jsonify({"error": "Profile not found"}), 404
+            return jsonify(profile)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    # ── Route: User Profile (Update) ────────────────────────────
+    @app.route('/api/users/<uid>/profile', methods=['PUT'])
+    def update_user_profile(uid):
+        """Update fields in a user's Firestore profile."""
+        data = request.get_json(force=True, silent=True) or {}
+        try:
+            updated = firebase_service.update_user_profile(uid, data)
+            return jsonify(updated)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    # ── Route: List All Users ────────────────────────────────────
+    @app.route('/api/users', methods=['GET'])
+    def list_users():
+        """Return all user profiles from Firestore."""
+        try:
+            users = firebase_service.list_all_users()
+            return jsonify(users)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
 
     # ── Route: Monitoring Status ────────────────────────────────
     @app.route('/api/status')
@@ -94,31 +196,44 @@ def create_app(config_name=None):
     # ── Route: Current Metrics ──────────────────────────────────
     @app.route('/api/metrics/current', methods=['GET'])
     def get_current_metrics():
-        """
-        Return the most recent system metrics snapshot.
-
-        Query Parameters:
-            normalized (str): If 'true', applies min-max / log normalisation
-                              via the DataScaler before returning the metrics.
-
-        Returns:
-            JSON dict of metric key-value pairs, or empty dict if no
-            metrics have been collected yet.
-        """
         metrics = system_monitor.get_latest_metrics()
         if not metrics:
             return jsonify({})
-
-        # Check if the caller wants normalised (0-1) values
         normalized = request.args.get('normalized', 'false').lower() == 'true'
         if normalized:
             return jsonify(data_scaler.normalize_metrics(metrics))
-
         return jsonify(metrics)
 
-    # ── Future: Blueprint Registration ──────────────────────────
-    # from .api import api_bp
-    # app.register_blueprint(api_bp, url_prefix='/api')
+    # ── Route: Crash Prediction ─────────────────────────────────
+    @app.route('/api/prediction', methods=['GET'])
+    def get_prediction():
+        """Return AI crash probability, risk factors, and actions."""
+        result = crash_predictor.predict()
+        return jsonify(result)
+
+    @app.route('/api/prediction/trend', methods=['GET'])
+    def get_prediction_trend():
+        """Return recent crash probability history for charts."""
+        return jsonify(crash_predictor.get_trend())
+
+    # ── Route: Process Alerts ──────────────────────────────────
+    @app.route('/api/process-alerts', methods=['GET'])
+    def get_process_alerts():
+        """Return per-process crash detection alerts."""
+        return jsonify({
+            "alerts":  process_monitor.get_alerts(),
+            "summary": process_monitor.get_summary(),
+        })
+
+    @app.route('/api/process-stats', methods=['GET'])
+    def get_process_stats():
+        """Return top processes by resource usage."""
+        return jsonify(process_monitor.get_top_processes())
+
+    @app.route('/api/process-alerts/trend', methods=['GET'])
+    def get_process_alerts_trend():
+        """Return recent health score history for charts."""
+        return jsonify(process_monitor.get_health_trend())
 
     return app
 
@@ -135,3 +250,4 @@ if __name__ == '__main__':
     finally:
         # Ensure the metrics polling thread is cleanly stopped on shutdown
         system_monitor.stop()
+        process_monitor.stop()

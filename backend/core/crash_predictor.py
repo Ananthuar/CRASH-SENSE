@@ -1,0 +1,547 @@
+"""
+CrashSense — Hybrid AI Crash Predictor
+========================================
+
+Combines TWO models for robust crash prediction:
+
+1. **Pre-Trained Random Forest** (supervised)
+   Trained on synthetic crash patterns (CPU exhaustion, memory exhaustion,
+   I/O storms, rapid spikes, gradual degradation, etc.). Uses normalized
+   features (percentages) so it works on any hardware. Provides a strong
+   baseline prediction even at startup.
+
+2. **Isolation Forest** (unsupervised)
+   Learns what "normal" looks like for THIS specific system from the live
+   metrics buffer. Catches system-specific anomalies the pre-trained
+   model might miss.
+
+The final crash probability is a weighted ensemble of both models:
+    P(crash) = 0.7 × RF_probability + 0.3 × IF_anomaly_score
+
+Architecture:
+    SystemMonitor (collector.py)
+        ↓  raw metrics history (120 × 7 features)
+    _compute_rf_features()    _compute_if_features()
+        ↓                          ↓
+    RandomForest.predict_proba()  IsolationForest.decision_function()
+        ↓                          ↓
+    rf_probability              if_anomaly_score
+        ↓─────────────────────────↓
+              weighted_ensemble
+                    ↓
+    predict() → { crash_probability, risk_level, factors, actions }
+
+Module-Level Singleton:
+    crash_predictor — Pre-created HybridCrashPredictor instance.
+
+Usage:
+    from core.crash_predictor import crash_predictor
+    result = crash_predictor.predict()
+"""
+
+import os
+import time
+import numpy as np
+import psutil
+from collections import deque
+from sklearn.ensemble import IsolationForest
+import joblib
+
+from core.collector import system_monitor
+from core.preprocessor import data_scaler
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Constants
+# ─────────────────────────────────────────────────────────────────
+
+# Features for the pre-trained Random Forest (must match train_model.py)
+_RF_FEATURE_NAMES = [
+    "cpu_percent",
+    "memory_percent",
+    "disk_usage_percent",
+    "cpu_std",
+    "memory_std",
+    "cpu_rate_of_change",
+    "memory_rate_of_change",
+    "cpu_memory_product",
+    "io_read_intensity",
+    "io_write_intensity",
+    "net_send_intensity",
+    "net_recv_intensity",
+]
+
+# Raw metric keys from SystemMonitor
+_METRIC_KEYS = [
+    "cpu_percent", "memory_percent",
+    "disk_read_bytes", "disk_write_bytes",
+    "net_bytes_sent", "net_bytes_recv",
+]
+
+# Ensemble weights
+_RF_WEIGHT = 0.7   # Pre-trained model weight
+_IF_WEIGHT = 0.3   # Anomaly detector weight
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Risk factor descriptions
+# ─────────────────────────────────────────────────────────────────
+
+_FACTOR_LABELS = {
+    "cpu_percent":      "High CPU usage",
+    "memory_percent":   "Elevated memory consumption",
+    "disk_read_bytes":  "Heavy disk read activity",
+    "disk_write_bytes": "Heavy disk write activity",
+    "net_bytes_sent":   "High outbound network traffic",
+    "net_bytes_recv":   "High inbound network traffic",
+    "cpu_memory":       "CPU × Memory pressure",
+    "io_pressure":      "Combined I/O pressure",
+    "cpu_roc":          "Rapid CPU usage changes",
+    "memory_roc":       "Rapid memory usage changes",
+}
+
+_SUGGESTED_ACTIONS = {
+    "cpu_percent": {
+        "title":    "Reduce CPU Load",
+        "desc":     "Identify and terminate CPU-intensive processes, or scale up CPU resources.",
+        "priority": "High",
+    },
+    "memory_percent": {
+        "title":    "Free Memory",
+        "desc":     "Close memory-heavy applications or restart services with memory leaks.",
+        "priority": "High",
+    },
+    "disk_read_bytes": {
+        "title":    "Reduce Disk Reads",
+        "desc":     "Check for excessive logging, large file scans, or runaway database queries.",
+        "priority": "Medium",
+    },
+    "disk_write_bytes": {
+        "title":    "Reduce Disk Writes",
+        "desc":     "Check for log rotation storms, temp file creation, or database write bursts.",
+        "priority": "Medium",
+    },
+    "net_bytes_sent": {
+        "title":    "Check Network Output",
+        "desc":     "Investigate high outbound traffic — possible data sync storm or exfiltration.",
+        "priority": "Medium",
+    },
+    "net_bytes_recv": {
+        "title":    "Check Network Input",
+        "desc":     "Investigate high inbound traffic — possible attack or overloaded API.",
+        "priority": "Medium",
+    },
+    "cpu_memory": {
+        "title":    "System Under Pressure",
+        "desc":     "Both CPU and memory are stressed. Consider restarting non-critical services.",
+        "priority": "Critical",
+    },
+    "io_pressure": {
+        "title":    "I/O Bottleneck Detected",
+        "desc":     "Disk and network I/O are both elevated. Check for cascading failures.",
+        "priority": "High",
+    },
+    "cpu_roc": {
+        "title":    "CPU Spike Detected",
+        "desc":     "CPU usage is changing rapidly — possible runaway process or fork bomb.",
+        "priority": "High",
+    },
+    "memory_roc": {
+        "title":    "Memory Spike Detected",
+        "desc":     "Memory usage is changing rapidly — possible memory leak escalation.",
+        "priority": "High",
+    },
+}
+
+
+class HybridCrashPredictor:
+    """
+    Ensemble crash predictor combining a pre-trained Random Forest
+    (general crash knowledge) with an Isolation Forest (system-specific
+    anomaly detection).
+
+    Args:
+        window_size:    Number of raw metric points per IF feature window.
+        refit_interval: Minimum seconds between IF model refits.
+        contamination:  IF expected anomaly proportion.
+    """
+
+    def __init__(self, window_size=20, refit_interval=10,
+                 contamination=0.1):
+        self.window_size = window_size
+        self.refit_interval = refit_interval
+
+        # ── Pre-trained Random Forest ────────────────────────────
+        self._rf_model = None
+        self._rf_loaded = False
+        self._load_pretrained_model()
+
+        # ── Isolation Forest (live anomaly detector) ─────────────
+        self._if_model = IsolationForest(
+            n_estimators=100,
+            contamination=contamination,
+            random_state=42,
+            n_jobs=1,
+        )
+        self._if_fitted = False
+        self._if_last_fit = 0
+
+        # ── Prediction history ───────────────────────────────────
+        self._prediction_history = deque(maxlen=60)
+        self._last_probability = 0.0
+
+    def _load_pretrained_model(self):
+        """Load the pre-trained Random Forest from disk."""
+        model_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "models", "crash_rf_model.joblib"
+        )
+        model_path = os.path.normpath(model_path)
+
+        try:
+            bundle = joblib.load(model_path)
+            self._rf_model = bundle["model"]
+            self._rf_loaded = True
+            print(f"[CrashPredictor] Loaded pre-trained model "
+                  f"(accuracy={bundle.get('accuracy', '?'):.4f}, "
+                  f"v{bundle.get('version', '?')})")
+        except FileNotFoundError:
+            print(f"[CrashPredictor] Warning: No pre-trained model at {model_path}")
+            print("                 Run 'python train_model.py' to train one.")
+        except Exception as e:
+            print(f"[CrashPredictor] Error loading model: {e}")
+
+    # ─────────────────────────────────────────────────────────────
+    #  Feature Engineering — Pre-trained RF
+    # ─────────────────────────────────────────────────────────────
+
+    def _compute_rf_features(self, history: list[dict]) -> np.ndarray:
+        """
+        Compute the 12 features expected by the pre-trained Random Forest.
+
+        Uses the last `window_size` raw metrics to compute:
+        - cpu_percent, memory_percent, disk_usage_percent (current values)
+        - cpu_std, memory_std (recent volatility)
+        - cpu/memory rate of change
+        - cpu_memory_product (interaction)
+        - I/O and network intensity (normalized 0-1)
+        """
+        if len(history) < 4:
+            return None
+
+        recent = history[-min(self.window_size, len(history)):]
+
+        # Current values (last snapshot)
+        latest = recent[-1]
+        cpu_pct = latest.get("cpu_percent", 0)
+        mem_pct = latest.get("memory_percent", 0)
+
+        # Disk usage as percentage
+        try:
+            disk = psutil.disk_usage("/")
+            disk_pct = disk.percent
+        except Exception:
+            disk_pct = 0
+
+        # Volatility (std of recent window)
+        cpu_vals = [m.get("cpu_percent", 0) for m in recent]
+        mem_vals = [m.get("memory_percent", 0) for m in recent]
+        cpu_std = float(np.std(cpu_vals))
+        mem_std = float(np.std(mem_vals))
+
+        # Rate of change (second half mean - first half mean)
+        half = len(recent) // 2
+        if half > 0:
+            cpu_roc = np.mean(cpu_vals[half:]) - np.mean(cpu_vals[:half])
+            mem_roc = np.mean(mem_vals[half:]) - np.mean(mem_vals[:half])
+        else:
+            cpu_roc = 0
+            mem_roc = 0
+
+        # CPU × Memory interaction
+        cpu_mem_prod = (cpu_pct * mem_pct) / 10000.0
+
+        # I/O intensity (normalized using log scale then capped at 1)
+        disk_read = latest.get("disk_read_bytes", 0)
+        disk_write = latest.get("disk_write_bytes", 0)
+        net_sent = latest.get("net_bytes_sent", 0)
+        net_recv = latest.get("net_bytes_recv", 0)
+
+        # Use log1p and normalize to ~0-1 range
+        # These thresholds approximate heavy I/O across typical systems
+        io_read_int = min(np.log1p(disk_read) / 30.0, 1.0)
+        io_write_int = min(np.log1p(disk_write) / 30.0, 1.0)
+        net_send_int = min(np.log1p(net_sent) / 28.0, 1.0)
+        net_recv_int = min(np.log1p(net_recv) / 28.0, 1.0)
+
+        features = np.array([[
+            cpu_pct,
+            mem_pct,
+            disk_pct,
+            cpu_std,
+            mem_std,
+            cpu_roc,
+            mem_roc,
+            cpu_mem_prod,
+            io_read_int,
+            io_write_int,
+            net_send_int,
+            net_recv_int,
+        ]])
+
+        return features
+
+    # ─────────────────────────────────────────────────────────────
+    #  Feature Engineering — Isolation Forest
+    # ─────────────────────────────────────────────────────────────
+
+    def _compute_if_features(self, history: list[dict]) -> np.ndarray:
+        """
+        Compute feature matrix for Isolation Forest from normalized metrics.
+        Each window of `window_size` points → one feature row with stats.
+        """
+        if len(history) < self.window_size:
+            return np.array([])
+
+        normalized = [data_scaler.normalize_metrics(m) for m in history]
+        arrays = {}
+        for key in _METRIC_KEYS:
+            arrays[key] = np.array([m.get(key, 0.0) for m in normalized])
+
+        n_windows = len(history) - self.window_size + 1
+        features_list = []
+
+        for i in range(n_windows):
+            row = []
+            for key in _METRIC_KEYS:
+                window = arrays[key][i:i + self.window_size]
+                row.extend([np.mean(window), np.std(window),
+                            np.max(window), np.min(window)])
+            features_list.append(row)
+
+        return np.array(features_list)
+
+    # ─────────────────────────────────────────────────────────────
+    #  Scoring Helpers
+    # ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _if_score_to_prob(score: float) -> float:
+        """Convert IF anomaly score to crash probability (0-1)."""
+        raw = -score
+        scale = 5.0
+        prob = 1.0 / (1.0 + np.exp(-scale * raw))
+        return float(np.clip(prob, 0.0, 1.0))
+
+    @staticmethod
+    def _get_risk_level(probability: float) -> str:
+        if probability < 0.25:
+            return "Low"
+        elif probability < 0.50:
+            return "Medium"
+        elif probability < 0.75:
+            return "High"
+        else:
+            return "Critical"
+
+    # ─────────────────────────────────────────────────────────────
+    #  Risk Factor Analysis
+    # ─────────────────────────────────────────────────────────────
+
+    def _analyze_risk_factors(self, history: list[dict]) -> list[dict]:
+        """
+        Identify which metrics contribute most to crash risk by comparing
+        recent values to the full-history baseline using z-scores.
+        """
+        if len(history) < 4:
+            return []
+
+        normalized = [data_scaler.normalize_metrics(m) for m in history]
+        recent = normalized[-min(self.window_size, len(normalized)):]
+        factors = []
+
+        for key in _METRIC_KEYS:
+            baseline_vals = [m.get(key, 0) for m in normalized]
+            recent_vals = [m.get(key, 0) for m in recent]
+            baseline_mean = np.mean(baseline_vals)
+            baseline_std = np.std(baseline_vals) + 1e-8
+            recent_mean = np.mean(recent_vals)
+            z = (recent_mean - baseline_mean) / baseline_std
+
+            if z > 1.0:
+                factors.append({
+                    "key":      key,
+                    "label":    _FACTOR_LABELS.get(key, key),
+                    "severity": round(min(z / 3.0, 1.0), 2),
+                    "z_score":  round(z, 2),
+                })
+
+        # Cross-metric checks
+        cpu_recent = np.mean([m.get("cpu_percent", 0) for m in recent])
+        mem_recent = np.mean([m.get("memory_percent", 0) for m in recent])
+
+        if cpu_recent > 0.6 and mem_recent > 0.6:
+            factors.append({
+                "key":      "cpu_memory",
+                "label":    _FACTOR_LABELS["cpu_memory"],
+                "severity": round(min((cpu_recent + mem_recent) / 2, 1.0), 2),
+                "z_score":  0,
+            })
+
+        # Rate of change
+        if len(recent) >= 4:
+            half = len(recent) // 2
+            cpu_v = [m.get("cpu_percent", 0) for m in recent]
+            mem_v = [m.get("memory_percent", 0) for m in recent]
+            cpu_roc = abs(np.mean(cpu_v[half:]) - np.mean(cpu_v[:half]))
+            mem_roc = abs(np.mean(mem_v[half:]) - np.mean(mem_v[:half]))
+
+            if cpu_roc > 0.15:
+                factors.append({
+                    "key": "cpu_roc", "label": _FACTOR_LABELS["cpu_roc"],
+                    "severity": round(min(cpu_roc, 1.0), 2), "z_score": 0,
+                })
+            if mem_roc > 0.15:
+                factors.append({
+                    "key": "memory_roc", "label": _FACTOR_LABELS["memory_roc"],
+                    "severity": round(min(mem_roc, 1.0), 2), "z_score": 0,
+                })
+
+        factors.sort(key=lambda f: f["severity"], reverse=True)
+        return factors[:5]
+
+    def _get_suggested_actions(self, risk_factors: list[dict]) -> list[dict]:
+        """Generate action recommendations from risk factors."""
+        actions = []
+        seen = set()
+        for f in risk_factors:
+            key = f["key"]
+            if key in _SUGGESTED_ACTIONS and key not in seen:
+                action = _SUGGESTED_ACTIONS[key].copy()
+                action["severity"] = f["severity"]
+                actions.append(action)
+                seen.add(key)
+
+        if not actions:
+            actions.append({
+                "title":    "System Healthy",
+                "desc":     "All metrics within normal parameters. No action needed.",
+                "priority": "Info",
+                "severity": 0.0,
+            })
+        return actions[:4]
+
+    # ─────────────────────────────────────────────────────────────
+    #  Main Prediction API
+    # ─────────────────────────────────────────────────────────────
+
+    def predict(self) -> dict:
+        """
+        Run hybrid crash prediction.
+
+        Returns dict with: crash_probability, crash_percent, risk_level,
+        top_risk_factors, suggested_actions, model_info, timestamp.
+        """
+        history = system_monitor.get_history()
+        now = time.time()
+
+        if len(history) < 5:
+            return {
+                "crash_probability": 0.0,
+                "crash_percent":     0,
+                "risk_level":        "Low",
+                "top_risk_factors":  [],
+                "suggested_actions": [{
+                    "title": "Collecting Data",
+                    "desc":  f"Need {5 - len(history)} more data points...",
+                    "priority": "Info", "severity": 0.0,
+                }],
+                "model_info": {"rf_loaded": self._rf_loaded, "if_fitted": self._if_fitted},
+                "timestamp":   now,
+                "data_points": len(history),
+            }
+
+        # ── Random Forest prediction ─────────────────────────────
+        rf_prob = 0.0
+        if self._rf_loaded:
+            rf_features = self._compute_rf_features(history)
+            if rf_features is not None:
+                try:
+                    # predict_proba returns [[P(healthy), P(crash)]]
+                    proba = self._rf_model.predict_proba(rf_features)
+                    rf_prob = float(proba[0][1])  # P(crash)
+                except Exception:
+                    rf_prob = 0.0
+
+        # ── Isolation Forest anomaly score ────────────────────────
+        if_prob = 0.0
+        if len(history) >= self.window_size + 5:
+            if_features = self._compute_if_features(history)
+            if if_features.size > 0 and len(if_features) >= 3:
+                # Re-fit periodically
+                if not self._if_fitted or (now - self._if_last_fit) > self.refit_interval:
+                    try:
+                        self._if_model.fit(if_features)
+                        self._if_fitted = True
+                        self._if_last_fit = now
+                    except Exception:
+                        pass
+
+                if self._if_fitted:
+                    try:
+                        score = self._if_model.decision_function(if_features[-1:])[0]
+                        if_prob = self._if_score_to_prob(score)
+                    except Exception:
+                        pass
+
+        # ── Ensemble ─────────────────────────────────────────────
+        if self._rf_loaded and self._if_fitted:
+            probability = _RF_WEIGHT * rf_prob + _IF_WEIGHT * if_prob
+        elif self._rf_loaded:
+            probability = rf_prob  # Only RF available
+        elif self._if_fitted:
+            probability = if_prob  # Only IF available
+        else:
+            probability = 0.0
+
+        probability = float(np.clip(probability, 0.0, 1.0))
+        self._last_probability = probability
+
+        # Store in history
+        self._prediction_history.append({
+            "probability": probability,
+            "rf_prob":     rf_prob,
+            "if_prob":     if_prob,
+            "timestamp":   now,
+        })
+
+        # Analyze risk factors & actions
+        risk_factors = self._analyze_risk_factors(history)
+        actions = self._get_suggested_actions(risk_factors)
+
+        return {
+            "crash_probability": round(probability, 4),
+            "crash_percent":     int(probability * 100),
+            "risk_level":        self._get_risk_level(probability),
+            "top_risk_factors":  risk_factors,
+            "suggested_actions": actions,
+            "model_info": {
+                "rf_loaded":     self._rf_loaded,
+                "rf_probability": round(rf_prob, 4),
+                "if_fitted":     self._if_fitted,
+                "if_probability": round(if_prob, 4),
+                "ensemble":      f"{_RF_WEIGHT:.0%} RF + {_IF_WEIGHT:.0%} IF",
+            },
+            "timestamp":   now,
+            "data_points": len(history),
+        }
+
+    def get_trend(self) -> list[dict]:
+        """Return recent prediction history for trend charts."""
+        return list(self._prediction_history)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  MODULE-LEVEL SINGLETON
+# ═══════════════════════════════════════════════════════════════
+crash_predictor = HybridCrashPredictor()

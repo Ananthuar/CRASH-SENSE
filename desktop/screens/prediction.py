@@ -1,173 +1,302 @@
 """
-CrashSense — Prediction Screen
-================================
+CrashSense — Enhanced Prediction Dashboard
+============================================
 
-AI-powered crash probability prediction and risk assessment.
+Live per-process crash detection dashboard with:
+  - System Health Gauge (Speedometer-style)
+  - Health Score Trend Chart
+  - Live Alert Feed with Per-Process Evidence
+  - Top Processes Table
 """
 
 import customtkinter as ctk
-import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-from matplotlib.figure import Figure
+import requests
+import threading
+from datetime import datetime
+import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.dates as mdates
+import numpy as np
 
 from desktop.theme import (
-    BG_ROOT, BG_CARD, BG_CARD_INNER, ORANGE, AMBER, RED, YELLOW, GREEN,
-    TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER, FONT_FAMILY,
+    BG_ROOT, BG_CARD, BG_CARD_INNER, ORANGE, RED, YELLOW, GREEN,
+    TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER, FONT_FAMILY, BLUE,
 )
 
+_API_BASE = "http://127.0.0.1:5000"
+_REFRESH_MS = 5000
+
+# ─────────────────────────────────────────────────────────────────
+#  Visual Config
+# ─────────────────────────────────────────────────────────────────
+
+_SEV_COLORS = {
+    "critical": RED,
+    "high":     ORANGE,
+    "medium":   YELLOW,
+    "low":      BLUE,
+}
+
+_SEV_BG = {
+    "critical": "#2a0808",
+    "high":     "#2a1a08",
+    "medium":   "#2a2508",
+    "low":      "#0f1a2a",
+}
+
+# Simplified icon mapping for better compatibility
+_TYPE_ICONS = {
+    "memory_leak":       "MEM",   # Memory
+    "cpu_runaway":       "CPU",   # CPU
+    "thread_explosion":  "THR",   # Threads
+    "fd_exhaustion":     "FIL",   # Files
+    "zombie":            "ZMB",   # Zombie
+    "oom_risk":          "OOM",   # OOM
+}
 
 class PredictionScreen(ctk.CTkFrame):
-    """Crash prediction dashboard — single scroll container."""
-
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=BG_ROOT, **kwargs)
+        self._update_id = None
+        self._destroyed = False
+        self._last_score = 100
+        
+        self._build_ui()
+        self.bind("<Destroy>", self._on_destroy)
+        self._schedule_update()
 
-        scroll = ctk.CTkScrollableFrame(self, fg_color=BG_ROOT, scrollbar_button_color="#1e2028", scrollbar_button_hover_color="#2a2c36")
+    def _build_ui(self):
+        scroll = ctk.CTkScrollableFrame(
+            self, fg_color=BG_ROOT,
+            scrollbar_button_color="#1e2028",
+            scrollbar_button_hover_color="#2a2c36",
+        )
         scroll.pack(fill="both", expand=True)
-        scroll.bind_all("<Button-4>", lambda e: scroll._parent_canvas.yview_scroll(-3, "units"))
-        scroll.bind_all("<Button-5>", lambda e: scroll._parent_canvas.yview_scroll(3, "units"))
 
-        # ── Top Row: Gauge + Risk ────────────────────────────────
-        top_row = ctk.CTkFrame(scroll, fg_color="transparent")
-        top_row.pack(fill="x", padx=24, pady=(20, 0))
-        top_row.columnconfigure(0, weight=2)
-        top_row.columnconfigure(1, weight=1)
+        def _scroll_up(e):
+            try: scroll._parent_canvas.yview_scroll(-3, "units")
+            except Exception: pass
+        def _scroll_down(e):
+            try: scroll._parent_canvas.yview_scroll(3, "units")
+            except Exception: pass
+        scroll.bind_all("<Button-4>", _scroll_up)
+        scroll.bind_all("<Button-5>", _scroll_down)
 
-        # Probability Gauge
-        gauge_card = ctk.CTkFrame(top_row, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
-        gauge_card.grid(row=0, column=0, padx=(0, 8), sticky="nsew")
+        self._scroll = scroll
 
-        ctk.CTkLabel(gauge_card, text="Crash Probability", font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w", padx=20, pady=(16, 0))
+        # ─── Top Row: Gauge and Trend Chart ─────────────────────
+        top_grid = ctk.CTkFrame(scroll, fg_color="transparent")
+        top_grid.pack(fill="x", padx=24, pady=(20, 0))
+        top_grid.columnconfigure(0, weight=1)
+        top_grid.columnconfigure(1, weight=2)
 
-        probability = 0.73
-        fig = Figure(figsize=(5, 3), dpi=100)
-        fig.patch.set_facecolor(BG_CARD)
-        ax = fig.add_subplot(111, projection="polar")
-        ax.set_facecolor(BG_CARD)
+        # Gauge Card
+        gauge_card = ctk.CTkFrame(top_grid, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
+        gauge_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        
+        ctk.CTkLabel(gauge_card, text="SYSTEM HEALTH", font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"), text_color=TEXT_MUTED).pack(pady=(15, 0))
+        
+        self._canvas_gauge = ctk.CTkCanvas(gauge_card, width=200, height=120, bg=BG_CARD, highlightthickness=0)
+        self._canvas_gauge.pack(pady=10)
+        
+        self._score_label = ctk.CTkLabel(gauge_card, text="100", font=ctk.CTkFont(family=FONT_FAMILY, size=32, weight="bold"), text_color=GREEN)
+        self._score_label.pack(pady=(0, 5))
+        
+        self._health_status_label = ctk.CTkLabel(gauge_card, text="HEALTHY", font=ctk.CTkFont(family=FONT_FAMILY, size=11, weight="bold"), text_color=GREEN)
+        self._health_status_label.pack(pady=(0, 15))
 
-        ax.barh(1, np.pi, left=0, height=0.3, color="#1e1e2a", alpha=0.8)
-        ax.barh(1, np.pi * probability, left=0, height=0.3, color=ORANGE, alpha=0.9)
+        # Trend Chart Card
+        chart_card = ctk.CTkFrame(top_grid, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
+        chart_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        
+        ctk.CTkLabel(chart_card, text="HEALTH TREND (LATEST 3 MIN)", font=ctk.CTkFont(family=FONT_FAMILY, size=10, weight="bold"), text_color=TEXT_MUTED).pack(pady=(10, 0), padx=15, anchor="w")
+        
+        self._fig, self._ax = plt.subplots(figsize=(5, 2), dpi=100)
+        self._fig.patch.set_facecolor(BG_CARD)
+        self._ax.set_facecolor(BG_CARD)
+        self._ax.tick_params(colors=TEXT_MUTED, labelsize=8)
+        self._ax.spines['bottom'].set_color(BORDER)
+        self._ax.spines['top'].set_visible(False)
+        self._ax.spines['right'].set_visible(False)
+        self._ax.spines['left'].set_color(BORDER)
+        
+        self._canvas_chart = FigureCanvasTkAgg(self._fig, master=chart_card)
+        self._canvas_chart.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
 
-        needle_angle = np.pi * probability
-        ax.plot([needle_angle, needle_angle], [0, 1.2], color=TEXT_PRIMARY, linewidth=2)
-        ax.plot(needle_angle, 1.2, "o", color=ORANGE, markersize=6)
+        # ─── Alert Feed Section ────────────────────────────────
+        alerts_header = ctk.CTkFrame(scroll, fg_color="transparent")
+        alerts_header.pack(fill="x", padx=24, pady=(20, 5))
+        
+        ctk.CTkLabel(alerts_header, text="ACTIVE CRASH PRECURSORS", font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"), text_color=TEXT_PRIMARY).pack(side="left")
+        self._alert_count_badge = ctk.CTkLabel(alerts_header, text="0", fg_color=BG_CARD_INNER, corner_radius=6, font=ctk.CTkFont(size=10, weight="bold"), width=30)
+        self._alert_count_badge.pack(side="left", padx=10)
 
-        ax.set_thetamin(0)
-        ax.set_thetamax(180)
-        ax.set_ylim(0, 1.6)
-        ax.set_yticks([])
-        ax.set_xticks([0, np.pi / 4, np.pi / 2, 3 * np.pi / 4, np.pi])
-        ax.set_xticklabels(["0%", "25%", "50%", "75%", "100%"], color=TEXT_MUTED, fontsize=8)
-        ax.spines["polar"].set_visible(False)
-        ax.grid(False)
-        fig.tight_layout(pad=0.5)
+        self._alerts_container = ctk.CTkFrame(scroll, fg_color="transparent")
+        self._alerts_container.pack(fill="x", padx=24)
 
-        canvas = FigureCanvasTkAgg(fig, master=gauge_card)
-        canvas.get_tk_widget().pack(padx=12, pady=(0, 4))
-        canvas.draw()
+        # ─── Top Processes Section ─────────────────────────────
+        procs_title = ctk.CTkLabel(scroll, text="TOP PROCESSES BY RISK SCORE", font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"), text_color=TEXT_PRIMARY, anchor="w")
+        procs_title.pack(fill="x", padx=24, pady=(20, 5))
 
-        ctk.CTkLabel(gauge_card, text="73%", font=ctk.CTkFont(family=FONT_FAMILY, size=36, weight="bold"), text_color=ORANGE).pack(pady=(0, 4))
-        ctk.CTkLabel(gauge_card, text="Crash probability in next 24 hours", font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_MUTED).pack(pady=(0, 16))
+        self._procs_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
+        self._procs_card.pack(fill="x", padx=24, pady=(0, 24))
 
-        # Risk Assessment
-        risk_card = ctk.CTkFrame(top_row, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
-        risk_card.grid(row=0, column=1, padx=(8, 0), sticky="nsew")
+        # Table Header
+        th = ctk.CTkFrame(self._procs_card, fg_color=BG_CARD_INNER, corner_radius=8)
+        th.pack(fill="x", padx=12, pady=(12, 4))
+        for i, h in enumerate(["Process", "PID", "CPU%", "Mem%", "RSS", "Threads"]):
+            th.columnconfigure(i, weight=1 if i > 0 else 3, uniform="col")
+            ctk.CTkLabel(th, text=h, font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MUTED, anchor="w" if i==0 else "center").grid(row=0, column=i, padx=8, pady=6, sticky="nsew")
 
-        ctk.CTkLabel(risk_card, text="Risk Assessment", font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w", padx=20, pady=(16, 12))
+        self._procs_body = ctk.CTkFrame(self._procs_card, fg_color="transparent")
+        self._procs_body.pack(fill="x", padx=12, pady=(0, 12))
 
-        levels = [
-            ("Low",    "< 30%",      GREEN,  "#0a2a14", False),
-            ("Medium", "30% - 60%",  YELLOW, "#2a2508", False),
-            ("High",   "> 60%",      RED,    "#2a0f0f", True),
-        ]
-        for label, range_text, color, bg, is_active in levels:
-            row = ctk.CTkFrame(
-                risk_card,
-                fg_color=bg if is_active else "transparent",
-                corner_radius=10,
-                border_width=1 if is_active else 0,
-                border_color=color,
-            )
-            row.pack(fill="x", padx=16, pady=4)
-            ri = ctk.CTkFrame(row, fg_color="transparent")
-            ri.pack(fill="x", padx=12, pady=10)
+        self._draw_gauge(100)
 
-            ctk.CTkLabel(ri, text="*", font=ctk.CTkFont(size=12, weight="bold"), text_color=color).pack(side="left")
-            ctk.CTkLabel(ri, text=f"  {label}", font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=color if is_active else TEXT_SECONDARY).pack(side="left")
+    def _draw_gauge(self, score):
+        """Draws a semi-circular gauge on the canvas."""
+        self._canvas_gauge.delete("all")
+        w, h = 200, 120
+        cx, cy = w/2, h-10
+        r = 80
+        
+        # Background arc
+        self._canvas_gauge.create_arc(cx-r, cy-r, cx+r, cy+r, start=0, extent=180, outline="#1e2028", width=12, style="arc")
+        
+        # Active arc
+        color = GREEN if score >= 80 else ORANGE if score >= 50 else RED
+        extent = (score / 100) * 180
+        self._canvas_gauge.create_arc(cx-r, cy-r, cx+r, cy+r, start=180, extent=-extent, outline=color, width=12, style="arc")
+        
+        # Needle
+        angle = np.pi - (score / 100) * np.pi
+        nx = cx + (r-15) * np.cos(angle)
+        ny = cy - (r-15) * np.sin(angle)
+        self._canvas_gauge.create_line(cx, cy, nx, ny, fill=TEXT_PRIMARY, width=3, capstyle="round")
+        self._canvas_gauge.create_oval(cx-5, cy-5, cx+5, cy+5, fill=TEXT_PRIMARY, outline=BG_CARD)
 
-            ctk.CTkLabel(ri, text=range_text, font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_MUTED).pack(side="right")
+    def _schedule_update(self):
+        if self._destroyed: return
+        threading.Thread(target=self._fetch_data, daemon=True).start()
 
-            if is_active:
-                ctk.CTkLabel(ri, text="< Current", font=ctk.CTkFont(family=FONT_FAMILY, size=10, weight="bold"), text_color=color).pack(side="right", padx=(0, 8))
+    def _fetch_data(self):
+        try:
+            alerts = requests.get(f"{_API_BASE}/api/process-alerts", timeout=3).json()
+            stats = requests.get(f"{_API_BASE}/api/process-stats", timeout=3).json()
+            trend = requests.get(f"{_API_BASE}/api/process-alerts/trend", timeout=3).json()
+            
+            if not self._destroyed:
+                self.after(0, lambda: self._update_ui(alerts, stats, trend))
+        except: pass
+        
+        if not self._destroyed:
+            self.after(_REFRESH_MS, self._schedule_update)
 
-        ctk.CTkFrame(risk_card, height=20, fg_color="transparent").pack()
+    def _update_ui(self, alerts_data, stats_data, trend_data):
+        summary = alerts_data.get("summary", {})
+        score = summary.get("health_score", 100)
+        status = summary.get("status", "healthy").upper()
+        
+        # Update Gauge
+        self._draw_gauge(score)
+        self._score_label.configure(text=str(int(score)), text_color=GREEN if score >= 80 else ORANGE if score >= 50 else RED)
+        self._health_status_label.configure(text=status, text_color=GREEN if score >= 80 else ORANGE if score >= 50 else RED)
+        
+        # Update Trend Chart
+        self._ax.clear()
+        if trend_data:
+            scores = [p['score'] for p in trend_data]
+            times = [datetime.fromtimestamp(p['timestamp']) for p in trend_data]
+            self._ax.plot(times, scores, color=BLUE, linewidth=2, marker='o', markersize=3)
+            self._ax.fill_between(times, scores, 0, color=BLUE, alpha=0.1)
+            self._ax.set_ylim(0, 105)
+            self._ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            self._ax.grid(True, linestyle='--', alpha=0.1)
+        self._canvas_chart.draw()
 
-        # ── 7-Day Forecast ───────────────────────────────────────
-        forecast_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
-        forecast_card.pack(fill="x", padx=24, pady=(12, 0))
+        # Update Alerts
+        self._alert_count_badge.configure(text=str(len(alerts_data.get("alerts", []))))
+        for child in self._alerts_container.winfo_children(): child.destroy()
+        
+        alerts = alerts_data.get("alerts", [])
+        if not alerts:
+            card = ctk.CTkFrame(self._alerts_container, fg_color=BG_CARD, corner_radius=12, border_width=1, border_color=BORDER)
+            card.pack(fill="x", pady=5)
+            ctk.CTkLabel(card, text="✓ All processes behaving normally", font=ctk.CTkFont(size=13), text_color=GREEN).pack(pady=15)
+        else:
+            for alert in alerts:
+                self._create_alert_card(alert)
 
-        ctk.CTkLabel(forecast_card, text="7-Day Crash Forecast", font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w", padx=20, pady=(16, 0))
+        # Update Table
+        for child in self._procs_body.winfo_children(): child.destroy()
+        
+        for i, p in enumerate(stats_data[:10]):
+            row_bg = BG_CARD_INNER if i % 2 == 0 else "transparent"
+            row = ctk.CTkFrame(self._procs_body, fg_color=row_bg, corner_radius=6)
+            row.pack(fill="x", pady=1)
+            
+            # Values: Process, PID, CPU%, Mem%, RSS, Threads
+            vals = [
+                str(p['name']), 
+                str(p['pid']), 
+                f"{p['cpu_percent']:.1f}", 
+                f"{p['memory_percent']:.1f}", 
+                f"{p['rss_mb']:.0f}MB", 
+                str(p['num_threads'])
+            ]
+            
+            for j, val in enumerate(vals):
+                row.columnconfigure(j, weight=1 if j > 0 else 3, uniform="col")
+                
+                # Style logic
+                alignment = "w" if j == 0 else "center"
+                color = TEXT_PRIMARY if j == 0 else TEXT_SECONDARY
+                
+                if j == 2 and p['cpu_percent'] > 50: color = ORANGE
+                if j == 2 and p['cpu_percent'] > 80: color = RED
+                
+                if j == 3 and p['memory_percent'] > 50: color = ORANGE
+                if j == 3 and p['memory_percent'] > 80: color = RED
+                    
+                lbl = ctk.CTkLabel(row, text=val, font=ctk.CTkFont(size=11), text_color=color, anchor=alignment)
+                lbl.grid(row=0, column=j, padx=8, pady=6, sticky="nsew")
 
-        fig2 = Figure(figsize=(8, 2.5), dpi=100)
-        fig2.patch.set_facecolor(BG_CARD)
-        ax2 = fig2.add_subplot(111)
-        ax2.set_facecolor(BG_CARD)
+    def _create_alert_card(self, alert):
+        sev = alert.get("severity", "low")
+        color = _SEV_COLORS.get(sev, BLUE)
+        icon = _TYPE_ICONS.get(alert.get("type"), "!!!")
+        
+        card = ctk.CTkFrame(self._alerts_container, fg_color=_SEV_BG.get(sev), corner_radius=12, border_width=1, border_color=color)
+        card.pack(fill="x", pady=4)
+        
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="x", padx=15, pady=10)
+        
+        # Icon/Type box
+        type_box = ctk.CTkFrame(inner, width=45, height=35, corner_radius=6, fg_color=BG_CARD_INNER)
+        type_box.pack(side="left")
+        type_box.pack_propagate(False)
+        ctk.CTkLabel(type_box, text=icon, font=ctk.CTkFont(size=10, weight="bold"), text_color=color).pack(expand=True)
+        
+        # Details
+        txt = ctk.CTkFrame(inner, fg_color="transparent")
+        txt.pack(side="left", padx=15, fill="x", expand=True)
+        
+        title_row = ctk.CTkFrame(txt, fg_color="transparent")
+        title_row.pack(fill="x")
+        ctk.CTkLabel(title_row, text=alert['title'], font=ctk.CTkFont(size=13, weight="bold"), text_color=color).pack(side="left")
+        ctk.CTkLabel(title_row, text=f" • {alert['name']} (PID {alert['pid']})", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED).pack(side="left", padx=5)
+        
+        ctk.CTkLabel(txt, text=alert['detail'], font=ctk.CTkFont(size=11), text_color=TEXT_SECONDARY, anchor="w").pack(fill="x")
+        
+        # Right info
+        info = ctk.CTkFrame(inner, fg_color="transparent")
+        info.pack(side="right")
+        ctk.CTkLabel(info, text=alert['metric'], font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="e")
+        ctk.CTkLabel(info, text=alert.get('time_str', ''), font=ctk.CTkFont(size=10), text_color=TEXT_MUTED).pack(anchor="e")
 
-        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        probs = [45, 52, 68, 73, 65, 58, 42]
-
-        ax2.fill_between(range(len(probs)), probs, alpha=0.15, color=ORANGE)
-        ax2.plot(range(len(probs)), probs, color=ORANGE, linewidth=2.5, marker="o", markersize=6, markerfacecolor=ORANGE)
-
-        ax2.axhline(y=60, color=RED, linewidth=1, linestyle="--", alpha=0.5)
-        ax2.text(6.2, 61, "Danger", color=RED, fontsize=8, alpha=0.7)
-
-        ax2.set_xticks(range(len(days)))
-        ax2.set_xticklabels(days)
-        ax2.set_ylim(0, 100)
-        ax2.set_ylabel("Crash Probability %", color=TEXT_MUTED, fontsize=9)
-        ax2.tick_params(colors=TEXT_MUTED, labelsize=9)
-        for spine in ax2.spines.values():
-            spine.set_color(BORDER)
-        ax2.grid(True, color="#1e1e2a", linewidth=0.5, alpha=0.5)
-        fig2.tight_layout(pad=1.5)
-
-        canvas2 = FigureCanvasTkAgg(fig2, master=forecast_card)
-        canvas2.get_tk_widget().pack(fill="x", padx=12, pady=(4, 16))
-        canvas2.draw()
-
-        # ── Preventive Actions ───────────────────────────────────
-        actions_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
-        actions_card.pack(fill="x", padx=24, pady=(12, 24))
-
-        ctk.CTkLabel(actions_card, text="Suggested Preventive Actions", font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w", padx=20, pady=(16, 8))
-
-        actions = [
-            ("[R]", "Restart Service",   "Restart the AuthService to clear memory leaks",   "High Priority"),
-            ("[M]", "Increase Memory",   "Scale memory allocation from 4GB to 8GB",         "Medium Priority"),
-            ("[?]", "Inspect Module",    "Run diagnostic on affected authentication module", "Recommended"),
-        ]
-        for icon, title, desc, priority in actions:
-            row = ctk.CTkFrame(actions_card, fg_color="transparent")
-            row.pack(fill="x", padx=16, pady=4)
-
-            action_inner = ctk.CTkFrame(row, fg_color=BG_CARD_INNER, corner_radius=10, border_width=1, border_color=BORDER)
-            action_inner.pack(fill="x")
-            ai = ctk.CTkFrame(action_inner, fg_color="transparent")
-            ai.pack(fill="x", padx=14, pady=12)
-
-            icon_frame = ctk.CTkFrame(ai, width=36, height=36, corner_radius=10, fg_color="#2a1a08")
-            icon_frame.pack(side="left")
-            icon_frame.pack_propagate(False)
-            ctk.CTkLabel(icon_frame, text=icon, font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"), text_color=ORANGE).pack(expand=True)
-
-            txt = ctk.CTkFrame(ai, fg_color="transparent")
-            txt.pack(side="left", padx=(10, 0), fill="x", expand=True)
-            ctk.CTkLabel(txt, text=title, font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=TEXT_PRIMARY, anchor="w").pack(fill="x")
-            ctk.CTkLabel(txt, text=desc, font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_SECONDARY, anchor="w").pack(fill="x")
-
-            ctk.CTkLabel(ai, text=priority, font=ctk.CTkFont(family=FONT_FAMILY, size=10, weight="bold"), text_color=ORANGE).pack(side="right")
-
-        ctk.CTkFrame(actions_card, height=8, fg_color="transparent").pack()
+    def _on_destroy(self, event):
+        if event.widget is self:
+            self._destroyed = True
+            if self._update_id: self.after_cancel(self._update_id)
+            plt.close(self._fig)

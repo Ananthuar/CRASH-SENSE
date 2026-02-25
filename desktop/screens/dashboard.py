@@ -36,11 +36,15 @@ class DashboardScreen(ctk.CTkFrame):
         scroll = ctk.CTkScrollableFrame(self, fg_color=BG_ROOT, scrollbar_button_color="#1e2028", scrollbar_button_hover_color="#2a2c36")
         scroll.pack(fill="both", expand=True)
 
-        # Bind mouse wheel for smooth scrolling
-        def _on_mousewheel(event):
-            scroll._parent_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        scroll.bind_all("<Button-4>", lambda e: scroll._parent_canvas.yview_scroll(-3, "units"))
-        scroll.bind_all("<Button-5>", lambda e: scroll._parent_canvas.yview_scroll(3, "units"))
+        # Bind mouse wheel for smooth scrolling (guarded against destroyed-canvas errors)
+        def _scroll_up(e):
+            try: scroll._parent_canvas.yview_scroll(-3, "units")
+            except Exception: pass
+        def _scroll_down(e):
+            try: scroll._parent_canvas.yview_scroll(3, "units")
+            except Exception: pass
+        scroll.bind_all("<Button-4>", _scroll_up)
+        scroll.bind_all("<Button-5>", _scroll_down)
 
         # ── System Status Banner ────────────────────────────────
         status = ctk.CTkFrame(scroll, fg_color=GREEN_BG, corner_radius=16, border_width=1, border_color="#1a4a2a")

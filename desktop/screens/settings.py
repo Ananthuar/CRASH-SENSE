@@ -7,12 +7,15 @@ user management, and logout.
 """
 
 import customtkinter as ctk
+import requests
 from desktop.theme import (
     BG_ROOT, BG_CARD, BG_CARD_INNER, ORANGE, RED, RED_BG,
     TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER, FONT_FAMILY,
 )
 from desktop.data import USERS
 from desktop.icons import get_icon
+
+BACKEND_BASE = "http://127.0.0.1:5000"
 
 
 class SettingsScreen(ctk.CTkFrame):
@@ -171,7 +174,26 @@ class SettingsScreen(ctk.CTkFrame):
             font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
         ).pack(side="right")
 
-        for user in USERS:
+        # Try to fetch live users from Firestore via backend; fall back to static data
+        users = USERS  # fallback
+        try:
+            resp = requests.get(f"{BACKEND_BASE}/api/users", timeout=3)
+            if resp.ok:
+                remote = resp.json()
+                if remote:
+                    # Normalise: backend returns {display_name, email, role, uid}
+                    users = [
+                        {
+                            "name":  u.get("display_name", u.get("email", "Unknown")),
+                            "email": u.get("email", ""),
+                            "role":  u.get("role", "User"),
+                        }
+                        for u in remote
+                    ]
+        except Exception:
+            pass  # backend offline — use local fallback
+
+        for user in users:
             row = ctk.CTkFrame(parent, fg_color=BG_CARD_INNER, corner_radius=10, border_width=1, border_color=BORDER)
             row.pack(fill="x", pady=4)
             ri = ctk.CTkFrame(row, fg_color="transparent")
@@ -189,3 +211,4 @@ class SettingsScreen(ctk.CTkFrame):
             ctk.CTkLabel(txt, text=user["email"], font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_SECONDARY).pack(anchor="w")
 
             ctk.CTkLabel(ri, text=f" {user['role']} ", font=ctk.CTkFont(family=FONT_FAMILY, size=10, weight="bold"), text_color=ORANGE, fg_color="#2a1a08", corner_radius=10).pack(side="right")
+

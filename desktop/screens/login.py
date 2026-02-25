@@ -2,146 +2,189 @@
 CrashSense — Login Screen
 ==========================
 
-Full-screen authentication view displayed on application launch.
+Email + Password login — everything happens inside the desktop app.
+Google Sign-In available as a secondary browser-based option.
+Checks email verification status on login.
 """
 
 import customtkinter as ctk
-from desktop.theme import (
-    BG_ROOT, ORANGE, AMBER, TEXT_PRIMARY, TEXT_SECONDARY,
-    TEXT_MUTED, BG_INPUT, BORDER, FONT_FAMILY, RED,
-)
-import os
-from PIL import Image
+import threading
+from desktop import auth
+from desktop import theme
 
 
 class LoginScreen(ctk.CTkFrame):
-    """Full-screen login page with centered authentication card."""
+    """Login screen with in-app email/password form."""
 
-    def __init__(self, master, on_login, on_signup, **kwargs):
-        super().__init__(master, fg_color=BG_ROOT, **kwargs)
+    def __init__(self, parent, on_login, on_signup):
+        super().__init__(parent, fg_color=theme.BG_ROOT)
+        self.on_login_success = on_login
+        self.switch_to_signup = on_signup
+        self._build_ui()
 
-        self._on_login = on_login
-        self._on_signup = on_signup
-
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-
-        card = ctk.CTkFrame(
-            self, width=580, fg_color="#111318",
-            corner_radius=24, border_width=1, border_color="#1e2028",
+    def _build_ui(self):
+        # Scrollable container
+        container = ctk.CTkScrollableFrame(
+            self, fg_color="transparent",
+            scrollbar_button_color=theme.BG_CARD,
+            scrollbar_button_hover_color=theme.ORANGE,
         )
-        card.grid(row=0, column=0)
-        card.grid_propagate(False)
-        card.configure(width=580, height=720)
+        container.pack(fill="both", expand=True, padx=40, pady=30)
 
-        inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(expand=True, fill="both", padx=48, pady=40)
-
-        # Branding — App icon from assets
-        icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                 "assets", "icon.png")
-        pil_icon = Image.open(icon_path).resize((80, 80), Image.LANCZOS)
-        self._brand_icon = ctk.CTkImage(light_image=pil_icon, dark_image=pil_icon, size=(80, 80))
-        ctk.CTkLabel(inner, image=self._brand_icon, text="").pack(pady=(0, 16))
-
+        # Header
         ctk.CTkLabel(
-            inner, text="CRASH SENSE",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=28, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack()
+            container, text="Welcome Back",
+            font=ctk.CTkFont(size=28, weight="bold"), text_color=theme.TEXT_PRIMARY,
+        ).pack(pady=(30, 2))
         ctk.CTkLabel(
-            inner, text="AI-Based Crash Detection System",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=14),
-            text_color=TEXT_MUTED,
-        ).pack(pady=(4, 28))
+            container, text="Sign in to CrashSense",
+            font=ctk.CTkFont(size=14), text_color=theme.TEXT_SECONDARY,
+        ).pack(pady=(0, 30))
 
-        # Username
+        # ── Email + Password Form Card ──────────────────────────
+        form_card = ctk.CTkFrame(container, fg_color=theme.BG_CARD, corner_radius=12)
+        form_card.pack(fill="x", pady=(0, 16))
+
+        # Email field
         ctk.CTkLabel(
-            inner, text="Username",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=15),
-            text_color=TEXT_SECONDARY, anchor="w",
-        ).pack(fill="x")
-        self._email = ctk.CTkEntry(
-            inner, height=48, corner_radius=12,
-            fg_color=BG_INPUT, border_color=BORDER,
-            placeholder_text="Enter your username",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=15),
-            text_color=TEXT_PRIMARY,
+            form_card, text="Email Address",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=theme.TEXT_SECONDARY,
+        ).pack(padx=24, pady=(24, 6), anchor="w")
+
+        self.email_entry = ctk.CTkEntry(
+            form_card, height=42, corner_radius=8,
+            fg_color=theme.BG_INPUT, border_color=theme.BORDER,
+            text_color=theme.TEXT_PRIMARY, placeholder_text="you@example.com",
+            placeholder_text_color=theme.TEXT_DARK, border_width=1,
+            font=ctk.CTkFont(size=14),
         )
-        self._email.pack(fill="x", pady=(6, 16))
+        self.email_entry.pack(fill="x", padx=24, pady=(0, 12))
 
-        # Password
+        # Password field
         ctk.CTkLabel(
-            inner, text="Password",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=15),
-            text_color=TEXT_SECONDARY, anchor="w",
-        ).pack(fill="x")
-        self._password = ctk.CTkEntry(
-            inner, height=48, corner_radius=12, show="*",
-            fg_color=BG_INPUT, border_color=BORDER,
-            placeholder_text="Enter your password",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=15),
-            text_color=TEXT_PRIMARY,
-        )
-        self._password.pack(fill="x", pady=(6, 10))
+            form_card, text="Password",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=theme.TEXT_SECONDARY,
+        ).pack(padx=24, pady=(4, 6), anchor="w")
 
-        # Error message label (hidden by default)
-        self._error_label = ctk.CTkLabel(
-            inner, text="",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=13),
-            text_color="#ffffff", anchor="w",
+        self.password_entry = ctk.CTkEntry(
+            form_card, height=42, corner_radius=8, show="\u2022",
+            fg_color=theme.BG_INPUT, border_color=theme.BORDER,
+            text_color=theme.TEXT_PRIMARY, placeholder_text="Enter your password",
+            placeholder_text_color=theme.TEXT_DARK, border_width=1,
+            font=ctk.CTkFont(size=14),
         )
-        self._error_label.pack(fill="x", pady=(0, 10))
+        self.password_entry.pack(fill="x", padx=24, pady=(0, 20))
 
         # Login button
         ctk.CTkButton(
-            inner, text="Login to Dashboard", height=50, corner_radius=12,
-            fg_color=ORANGE, hover_color="#ea6c10",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=16, weight="bold"),
-            command=self._attempt_login,
-        ).pack(fill="x", pady=(0, 10))
+            form_card, text="Sign In", height=44, corner_radius=10,
+            fg_color=theme.ORANGE, hover_color=theme.AMBER,
+            text_color="white", font=ctk.CTkFont(size=15, weight="bold"),
+            command=self._do_email_login,
+        ).pack(fill="x", padx=24, pady=(0, 24))
 
-        # Demo mode
+        # ── Divider ────────────────────────────────────────────
+        divider_frame = ctk.CTkFrame(container, fg_color="transparent", height=30)
+        divider_frame.pack(fill="x", pady=(4, 4))
+        ctk.CTkFrame(divider_frame, fg_color=theme.BORDER, height=1).place(
+            relx=0, rely=0.5, relwidth=0.4)
+        ctk.CTkLabel(
+            divider_frame, text="OR", font=ctk.CTkFont(size=11),
+            text_color=theme.TEXT_MUTED, fg_color="transparent",
+        ).place(relx=0.5, rely=0.5, anchor="center")
+        ctk.CTkFrame(divider_frame, fg_color=theme.BORDER, height=1).place(
+            relx=0.6, rely=0.5, relwidth=0.4)
+
+        # ── Google button ──────────────────────────────────────
         ctk.CTkButton(
-            inner, text="Enter Demo Mode", height=50, corner_radius=12,
-            fg_color="#1a1c24", hover_color="#2a2c36",
-            border_width=1, border_color=BORDER,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=15),
-            text_color=TEXT_PRIMARY,
-            command=self._on_login,
-        ).pack(fill="x", pady=(0, 20))
+            container, text="\u25CF  Continue with Google", height=44,
+            corner_radius=10,
+            fg_color=theme.BG_CARD, hover_color=theme.BG_HOVER,
+            border_color=theme.BORDER, border_width=1,
+            text_color=theme.TEXT_PRIMARY, font=ctk.CTkFont(size=14),
+            command=self._do_google_login,
+        ).pack(fill="x", pady=(0, 16))
 
-        # Sign up link
-        signup_frame = ctk.CTkFrame(inner, fg_color="transparent")
-        signup_frame.pack()
+        # ── Error / Status ─────────────────────────────────────
+        self.error_label = ctk.CTkLabel(
+            container, text="", font=ctk.CTkFont(size=13),
+            text_color=theme.RED, wraplength=380,
+        )
+        self.error_label.pack(pady=(0, 4))
+
+        self.status_label = ctk.CTkLabel(
+            container, text="", font=ctk.CTkFont(size=12),
+            text_color=theme.TEXT_MUTED, wraplength=380,
+        )
+        self.status_label.pack(pady=(0, 10))
+
+        # ── Signup link ────────────────────────────────────────
+        signup_frame = ctk.CTkFrame(container, fg_color="transparent")
+        signup_frame.pack(pady=(5, 20))
         ctk.CTkLabel(
             signup_frame, text="Don't have an account?",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=13),
-            text_color=TEXT_MUTED,
-        ).pack(side="left")
+            font=ctk.CTkFont(size=13), text_color=theme.TEXT_SECONDARY,
+        ).pack(side="left", padx=(0, 5))
         ctk.CTkButton(
             signup_frame, text="Sign Up", width=60,
-            fg_color="transparent", hover_color=BG_ROOT,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
-            text_color=ORANGE,
-            command=self._on_signup,
+            fg_color="transparent", hover_color=theme.BG_HOVER,
+            text_color=theme.ORANGE, font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.switch_to_signup,
         ).pack(side="left")
 
-        # Footer
-        ctk.CTkFrame(inner, height=1, fg_color=BORDER).pack(fill="x", pady=(20, 12))
-        ctk.CTkLabel(
-            inner, text="Use credentials:  test / test",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=13),
-            text_color=TEXT_MUTED,
-        ).pack()
+        # Bind Enter key
+        self.password_entry.bind("<Return>", lambda e: self._do_email_login())
 
-    def _attempt_login(self):
-        """Validate credentials and show error or proceed."""
-        username = self._email.get().strip()
-        password = self._password.get().strip()
+    def _show_error(self, msg):
+        self.status_label.configure(text="")
+        self.error_label.configure(text=msg)
 
-        if username == "test" and password == "test":
-            self._error_label.configure(text="")
-            self._on_login()
-        else:
-            self._error_label.configure(text="Invalid credentials. Use test / test")
+    def _show_status(self, msg):
+        self.error_label.configure(text="")
+        self.status_label.configure(text=msg)
+
+    # ── Email + Password Login ──────────────────────────────────
+    def _do_email_login(self):
+        email    = self.email_entry.get().strip()
+        password = self.password_entry.get()
+
+        if not email:
+            self._show_error("Please enter your email address.")
+            return
+        if not password:
+            self._show_error("Please enter your password.")
+            return
+
+        self._show_status("Signing in...")
+
+        def _run():
+            try:
+                user = auth.sign_in_email_password(email, password)
+                self.after(0, lambda: self.status_label.configure(text=""))
+                self.after(0, lambda: self.on_login_success(user))
+            except auth.AuthError as exc:
+                err_msg = str(exc)
+                self.after(0, lambda: self._show_error(err_msg))
+            except Exception as exc:
+                err_msg = f"Unexpected error: {exc}"
+                self.after(0, lambda: self._show_error(err_msg))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # ── Google Login ────────────────────────────────────────────
+    def _do_google_login(self):
+        self._show_status("Opening browser for Google sign-in...")
+
+        def _run():
+            try:
+                user = auth.sign_in_with_google()
+                self.after(0, lambda: self.status_label.configure(text=""))
+                self.after(0, lambda: self.on_login_success(user))
+            except auth.AuthError as exc:
+                err_msg = str(exc)
+                self.after(0, lambda: self._show_error(err_msg))
+            except Exception as exc:
+                err_msg = f"Unexpected error: {exc}"
+                self.after(0, lambda: self._show_error(err_msg))
+
+        threading.Thread(target=_run, daemon=True).start()
