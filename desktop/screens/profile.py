@@ -37,6 +37,7 @@ class ProfileScreen(ctk.CTkFrame):
         super().__init__(master, fg_color=BG_ROOT, **kwargs)
         self._user = session.get_user()
         self._edit_mode = False
+        self._fields = {}
 
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -51,13 +52,13 @@ class ProfileScreen(ctk.CTkFrame):
         outer.grid(row=0, column=0)
 
         # ── Profile Card ────────────────────────────────────────
-        card = ctk.CTkFrame(
-            outer, width=520, fg_color=BG_CARD,
+        card = ctk.CTkScrollableFrame(
+            outer, width=520, height=540, fg_color=BG_CARD,
             corner_radius=24, border_width=1, border_color=BORDER,
         )
         card.pack(pady=48)
-        card.pack_propagate(False)
-        card.configure(width=520, height=540)
+        card.bind_all("<Button-4>", lambda e: card._parent_canvas.yview_scroll(-3, "units"))
+        card.bind_all("<Button-5>", lambda e: card._parent_canvas.yview_scroll(3, "units"))
 
         inner = ctk.CTkFrame(card, fg_color="transparent")
         inner.pack(expand=True, fill="both", padx=48, pady=36)
@@ -128,22 +129,38 @@ class ProfileScreen(ctk.CTkFrame):
 
         # ── Profile Fields ───────────────────────────────────────
         fields = [
-            ("Email",        user.get("email", "—")),
-            ("Role",         user.get("role", "User")),
-            ("Member Since", user.get("joined", "—") or "—"),
+            ("Email",        user.get("email", "—"), True),
+            ("Role",         user.get("role", "User"), True),
+            ("Member Since", user.get("joined", "—") or "—", False),
         ]
-        for label, value in fields:
-            self._field_row(inner, label, value)
+        for label, value, editable in fields:
+            self._field_row(inner, label, value, editable)
 
-    def _field_row(self, parent, label: str, value: str):
+    def _field_row(self, parent, label: str, value: str, editable: bool):
         row = ctk.CTkFrame(parent, fg_color=BG_CARD_INNER, corner_radius=10, border_width=1, border_color=BORDER)
         row.pack(fill="x", pady=4)
         ri = ctk.CTkFrame(row, fg_color="transparent")
         ri.pack(fill="x", padx=16, pady=10)
         ctk.CTkLabel(ri, text=label, font=ctk.CTkFont(family=FONT_FAMILY, size=11),
                      text_color=TEXT_MUTED).pack(anchor="w")
-        ctk.CTkLabel(ri, text=value, font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"),
-                     text_color=TEXT_PRIMARY).pack(anchor="w")
+        
+        val_label = ctk.CTkLabel(ri, text=value, font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"),
+                     text_color=TEXT_PRIMARY)
+        val_label.pack(anchor="w")
+
+        field_widgets = {"label": val_label, "editable": editable}
+
+        if editable:
+            entry = ctk.CTkEntry(
+                ri, height=32, corner_radius=8,
+                fg_color=BG_CARD, border_color=BORDER,
+                font=ctk.CTkFont(family=FONT_FAMILY, size=14),
+                text_color=TEXT_PRIMARY,
+            )
+            entry.insert(0, value if value != "—" else "")
+            field_widgets["entry"] = entry
+
+        self._fields[label] = field_widgets
 
     # ── Edit Mode ────────────────────────────────────────────────
 
@@ -152,24 +169,46 @@ class ProfileScreen(ctk.CTkFrame):
         if self._edit_mode:
             self._edit_btn.configure(text="Cancel")
             self._edit_frame.pack(fill="x", pady=(0, 8))
+            for field in self._fields.values():
+                if field["editable"]:
+                    field["label"].pack_forget()
+                    field["entry"].pack(fill="x", pady=(4, 0))
         else:
             self._edit_btn.configure(text="Edit Profile")
             self._edit_frame.pack_forget()
             self._status_label.configure(text="")
+            for field in self._fields.values():
+                if field["editable"]:
+                    field["entry"].pack_forget()
+                    field["label"].pack(anchor="w")
 
     def _save_profile(self):
         new_name = self._name_entry.get().strip()
+        new_email = self._fields.get("Email", {}).get("entry").get().strip() if self._fields.get("Email", {}).get("entry") else self._user.get("email", "")
+        new_role = self._fields.get("Role", {}).get("entry").get().strip() if self._fields.get("Role", {}).get("entry") else self._user.get("role", "")
+        
         if not new_name:
             self._status_label.configure(text="Name cannot be empty.", text_color=RED)
             return
 
+        payload = {
+            "display_name": new_name,
+            "email": new_email,
+            "role": new_role,
+        }
+
         uid = self._user.get("uid")
         if not uid:
             # Demo mode — just update in-memory
-            session.set_user({**self._user, "display_name": new_name})
+            session.set_user({**self._user, **payload})
             self._name_label.configure(text=new_name)
+            if self._fields.get("Email", {}).get("label"):
+                 self._fields["Email"]["label"].configure(text=new_email)
+            if self._fields.get("Role", {}).get("label"):
+                 self._fields["Role"]["label"].configure(text=new_role)
             self._toggle_edit()
             self._status_label.configure(text="Profile updated locally (Demo Mode).", text_color=TEXT_MUTED)
+            self.after(3000, lambda: self._status_label.configure(text=""))
             return
 
         self._save_btn.configure(state="disabled", text="Saving…")
@@ -178,7 +217,7 @@ class ProfileScreen(ctk.CTkFrame):
             try:
                 resp = requests.put(
                     f"{BACKEND_BASE}/api/users/{uid}/profile",
-                    json={"display_name": new_name},
+                    json=payload,
                     timeout=5,
                 )
                 success = resp.ok
@@ -187,19 +226,26 @@ class ProfileScreen(ctk.CTkFrame):
                 success = False
                 error_msg = f"Save failed: {exc}"
 
-            self.after(0, lambda: self._after_save(success, new_name, error_msg))
+            self.after(0, lambda: self._after_save(success, payload, error_msg))
 
         threading.Thread(target=_do_save, daemon=True).start()
 
-    def _after_save(self, success: bool, new_name: str, error_msg: str):
+    def _after_save(self, success: bool, payload: dict, error_msg: str):
         self._save_btn.configure(state="normal", text="Save")
         if success:
             # Update session and label
-            updated = {**self._user, "display_name": new_name}
+            updated = {**self._user, **payload}
             session.set_user(updated)
             self._user = session.get_user()
-            self._name_label.configure(text=new_name)
+            
+            self._name_label.configure(text=payload.get("display_name", ""))
+            if self._fields.get("Email", {}).get("label"):
+                 self._fields["Email"]["label"].configure(text=payload.get("email", ""))
+            if self._fields.get("Role", {}).get("label"):
+                 self._fields["Role"]["label"].configure(text=payload.get("role", ""))
+
             self._toggle_edit()
-            self._status_label.configure(text="✓ Profile saved successfully.", text_color=GREEN)
+            self._status_label.configure(text="Profile saved successfully.", text_color=GREEN)
+            self.after(3000, lambda: self._status_label.configure(text=""))
         else:
             self._status_label.configure(text=error_msg, text_color=RED)

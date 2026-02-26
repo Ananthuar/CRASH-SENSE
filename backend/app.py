@@ -156,6 +156,40 @@ def create_app(config_name=None):
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
 
+    # ── Route: User Settings (Get) ──────────────────────────────
+    @app.route('/api/users/<uid>/settings', methods=['GET'])
+    def get_user_settings(uid):
+        """Fetch a user's Firestore config."""
+        try:
+            settings = firebase_service.get_user_settings(uid)
+            if settings is None:
+                return jsonify({}), 200 # Return empty dict if no settings exist yet
+            return jsonify(settings)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    # ── Route: User Settings (Update) ───────────────────────────
+    @app.route('/api/users/<uid>/settings', methods=['PUT'])
+    def update_user_settings(uid):
+        """Update fields in a user's Firestore config and apply to metrics."""
+        data = request.get_json(force=True, silent=True) or {}
+        try:
+            updated = firebase_service.update_user_settings(uid, data)
+            
+            # Now, apply these directly to the live process monitor
+            if "cpu_alert" in updated:
+                process_monitor.CPU_RUNAWAY_PERCENT = float(updated["cpu_alert"])
+            if "memory_alert" in updated:
+                process_monitor.OOM_RAM_PERCENT = float(updated["memory_alert"])
+            if "thread_alert" in updated:
+                process_monitor.THREAD_MAX_COUNT = int(updated["thread_alert"])
+            if "response_alert" in updated:
+                process_monitor.SCAN_INTERVAL = max(1, int(updated["response_alert"]))
+                
+            return jsonify(updated)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
     # ── Route: List All Users ────────────────────────────────────
     @app.route('/api/users', methods=['GET'])
     def list_users():

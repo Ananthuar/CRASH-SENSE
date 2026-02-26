@@ -1,4 +1,3 @@
-
 ---
 
 # CRASH SENSE
@@ -8,22 +7,27 @@
 ## 🚀 Features
 
 * **Real-time Monitoring:** Continuously tracks system processes and resource usage using `psutil`.
-* **AI-Driven Analysis:** Uses machine learning to distinguish between intentional process exits and actual software crashes.
-* **Modern Desktop UI:** A clean, dark-themed dashboard built with `CustomTkinter` and `Matplotlib` for visual data tracking.
+* **AI-Driven Analysis:** Uses a trained machine learning model to predict crashes based on resource usage patterns (CPU, Memory, Threads), distinguishing between normal behavior and crash precursors.
+* **Firebase Authentication:** Secure login and signup flows with email/password authentication using Firebase.
+* **Modern Desktop UI:** A clean, dark-themed dashboard built with `CustomTkinter` and `Matplotlib` for visual data tracking, including dynamic resource charts and a speedometer health gauge.
+* **Per-Process Detection:** Capable of monitoring multiple applications simultaneously, specifically detecting memory leaks, CPU runaways, thread explosions, zombie processes, and OOM risks.
 * **RESTful Backend:** A Flask-based API that acts as a bridge between the system collector and the user interface.
-* **Cross-Process Detection:** Capable of monitoring multiple applications simultaneously.
 
 ## 📂 Project Structure
 
 ```text
 CRASH-SENSE/
-├── backend/            # Flask API and AI Processing logic
-│   ├── core/           # System monitoring and data scaling modules
-│   └── config.py       # Configuration settings
+├── backend/            # Flask API, ML Model, and System Monitor
+│   ├── core/           # Process monitor and crash predictor modules
+│   ├── train_model.py  # Script for training the crash prediction model
+│   ├── firebase_service.py # Firebase interaction logic
+│   └── app.py          # Main Flask backend server
 ├── desktop/            # CustomTkinter GUI application
+│   ├── screens/        # Dashboard, Prediction, Login, Signup UI views
+│   ├── auth.py         # Client-side authentication handling
+│   └── app.py          # Desktop application entry point
 ├── crash_sense.sh      # Shell script for automated tasks
 └── requirements.txt    # Project dependencies
-
 ```
 
 ## 🛠️ Installation
@@ -35,10 +39,7 @@ CRASH-SENSE/
 * **Tkinter system package** (Required for the GUI)
 ```bash
 sudo pacman -S tk
-
 ```
-
-
 
 ### Setup Environment
 
@@ -46,48 +47,43 @@ sudo pacman -S tk
 ```bash
 git clone https://github.com/Ananthuar/CRASH-SENSE.git
 cd CRASH-SENSE
-
 ```
-
 
 2. **Create and activate a virtual environment:**
 ```bash
 /usr/bin/python -m venv venv
 source venv/bin/activate
-
 ```
-
 
 3. **Install dependencies:**
 ```bash
 pip install -r requirements.txt
-
 ```
 
-
+4. **Firebase Configuration (Required):**
+You must place your Firebase Admin SDK credentials file (`firebase-credentials.json`) in the root directory for authentication to function properly.
 
 ## 🖥️ Usage
 
-### 1. Start the Backend
-
-Navigate to the backend folder and launch the Flask server:
-
+### Quick Start
+You can launch both the backend server and the desktop application simultaneously using the shell script:
 ```bash
-cd backend
-python app.py
-
+./crash_sense.sh
 ```
 
-The API will be available at `http://127.0.0.1:5000`. You can check the health status at `/api/health`.
+### Manual Start
 
-### 2. Launch the Desktop Dashboard
-
-In a new terminal (with the `venv` active):
-
+#### 1. Start the Backend
+Navigate to the root folder, ensure your `venv` is active, and launch the Flask server:
 ```bash
-cd desktop
-python app.py
+python backend/app.py
+```
+The API will be available at `http://127.0.0.1:5000`.
 
+#### 2. Launch the Desktop Dashboard
+In a new terminal (with the `venv` active):
+```bash
+python desktop/app.py
 ```
 
 ## 📊 API Endpoints
@@ -95,8 +91,8 @@ python app.py
 | Endpoint | Method | Description |
 | --- | --- | --- |
 | `/api/health` | GET | Returns service status and version. |
-| `/api/status` | GET | Returns the current monitoring state. |
-| `/api/metrics/current` | GET | Returns real-time CPU/Memory metrics. |
+| `/api/process-stats` | GET | Returns metrics for all currently tracked processes. |
+| `/api/process-alerts` | GET | Returns active process crash precursors and the overall system health score. |
 
 ## 🤝 Contributing
 

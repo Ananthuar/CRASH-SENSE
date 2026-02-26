@@ -214,6 +214,13 @@ class SignUpScreen(ctk.CTkFrame):
         def _run():
             try:
                 user = auth.sign_up_email_password(email, password, name)
+                
+                # Clear fields
+                self.after(0, lambda: self.name_entry.delete(0, 'end'))
+                self.after(0, lambda: self.email_entry.delete(0, 'end'))
+                self.after(0, lambda: self.password_entry.delete(0, 'end'))
+                self.after(0, lambda: self.confirm_entry.delete(0, 'end'))
+                
                 # Show success message — user needs to verify email first
                 self.after(0, lambda: self._show_success(
                     "Account created! A verification email has been sent to "

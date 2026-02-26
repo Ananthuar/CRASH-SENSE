@@ -123,6 +123,23 @@ def update_user_profile(uid: str, data: dict) -> dict:
     return data
 
 
+def get_user_settings(uid: str) -> dict | None:
+    """Read a user's settings from users/{uid}/settings/config."""
+    db = _get_db()
+    doc = db.collection("users").document(uid).collection("settings").document("config").get()
+    if doc.exists:
+        return doc.to_dict()
+    return None
+
+
+def update_user_settings(uid: str, data: dict) -> dict:
+    """Merge-update a user's settings in users/{uid}/settings/config."""
+    db = _get_db()
+    db.collection("users").document(uid).collection("settings").document("config").set(data, merge=True)
+    logger.info("Updated Firestore settings for uid=%s, fields=%s", uid, list(data.keys()))
+    return data
+
+
 def list_all_users() -> list[dict]:
     """
     Return all user profile documents from the `users` collection.

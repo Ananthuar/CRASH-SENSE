@@ -161,6 +161,8 @@ class LoginScreen(ctk.CTkFrame):
             try:
                 user = auth.sign_in_email_password(email, password)
                 self.after(0, lambda: self.status_label.configure(text=""))
+                self.after(0, lambda: self.email_entry.delete(0, 'end'))
+                self.after(0, lambda: self.password_entry.delete(0, 'end'))
                 self.after(0, lambda: self.on_login_success(user))
             except auth.AuthError as exc:
                 err_msg = str(exc)

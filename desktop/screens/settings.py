@@ -7,13 +7,16 @@ user management, and logout.
 """
 
 import customtkinter as ctk
+import threading
+import customtkinter as ctk
 import requests
 from desktop.theme import (
     BG_ROOT, BG_CARD, BG_CARD_INNER, ORANGE, RED, RED_BG,
-    TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER, FONT_FAMILY,
+    TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER, FONT_FAMILY, GREEN
 )
 from desktop.data import USERS
 from desktop.icons import get_icon
+from desktop import session
 
 BACKEND_BASE = "http://127.0.0.1:5000"
 
@@ -24,6 +27,11 @@ class SettingsScreen(ctk.CTkFrame):
     def __init__(self, master, on_logout, **kwargs):
         super().__init__(master, fg_color=BG_ROOT, **kwargs)
         self._on_logout = on_logout
+        self._user = session.get_user()
+        self._settings = {}
+        
+        # Debounce timer for saving
+        self._save_timer = None
 
         scroll = ctk.CTkScrollableFrame(self, fg_color=BG_ROOT, scrollbar_button_color="#1e2028", scrollbar_button_hover_color="#2a2c36")
         scroll.pack(fill="both", expand=True)
@@ -31,7 +39,44 @@ class SettingsScreen(ctk.CTkFrame):
         scroll.bind_all("<Button-5>", lambda e: scroll._parent_canvas.yview_scroll(3, "units"))
 
         self._section_icons = []  # prevent GC
+        self._scroll = scroll
+        
+        # Load settings from backend before building UI
+        self._load_settings()
 
+    def _load_settings(self):
+        uid = self._user.get("uid")
+        if uid:
+            try:
+                resp = requests.get(f"{BACKEND_BASE}/api/users/{uid}/settings", timeout=3)
+                if resp.ok:
+                    self._settings = resp.json() or {}
+            except Exception:
+                pass  # Use defaults if backend offline
+        self._build_sections()
+
+    def _schedule_save(self):
+        """Debounce saving to the backend."""
+        if self._save_timer is not None:
+            self.after_cancel(self._save_timer)
+        self._save_timer = self.after(1000, self._save_to_backend)
+
+    def _save_to_backend(self):
+        uid = self._user.get("uid")
+        if not uid:
+            return  # Demo mode
+            
+        def _put():
+            try:
+                requests.put(f"{BACKEND_BASE}/api/users/{uid}/settings", json=self._settings, timeout=5)
+            except Exception:
+                pass
+                
+        threading.Thread(target=_put, daemon=True).start()
+
+    def _build_sections(self):
+        scroll = self._scroll
+        
         # Section 1: Alert Thresholds
         self._section(scroll, "thresholds", "Alert Thresholds", "Configure system monitoring thresholds", self._build_thresholds)
 
@@ -94,25 +139,35 @@ class SettingsScreen(ctk.CTkFrame):
 
     def _build_thresholds(self, parent, header):
         thresholds = [
-            ("CPU Usage Alert",        85, "%"),
-            ("Memory Usage Alert",     90, "%"),
-            ("Thread Count Alert",     50, "threads"),
-            ("Response Time Alert",     3, "seconds"),
+            ("CPU Usage Alert",        self._settings.get("cpu_alert", 85), "%", "cpu_alert", 100),
+            ("Memory Usage Alert",     self._settings.get("memory_alert", 90), "%", "memory_alert", 100),
+            ("Max Threads Per Process", self._settings.get("thread_alert", 50), "threads", "thread_alert", 500),
+            ("Response Time Alert",    self._settings.get("response_alert", 3), "seconds", "response_alert", 30),
         ]
-        for label, val, unit in thresholds:
+
+        for label, val, unit, key, max_val in thresholds:
             row = ctk.CTkFrame(parent, fg_color="transparent")
             row.pack(fill="x", pady=6)
 
             top = ctk.CTkFrame(row, fg_color="transparent")
             top.pack(fill="x")
             ctk.CTkLabel(top, text=label, font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"), text_color=TEXT_PRIMARY).pack(side="left")
-            ctk.CTkLabel(top, text=f"{val} {unit}", font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"), text_color=ORANGE).pack(side="right")
+            
+            val_label = ctk.CTkLabel(top, text=f"{val} {unit}", font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"), text_color=ORANGE)
+            val_label.pack(side="right")
+            
+            def on_change(new_val, lbl=val_label, k=key, u=unit):
+                v = int(new_val)
+                lbl.configure(text=f"{v} {u}")
+                self._settings[k] = v
+                self._schedule_save()
 
             slider = ctk.CTkSlider(
-                row, from_=0, to=100, number_of_steps=100,
+                row, from_=0, to=max_val, number_of_steps=max_val,
                 progress_color=ORANGE, button_color=ORANGE,
                 button_hover_color="#ea6c10", fg_color=BG_CARD_INNER,
                 height=8,
+                command=on_change
             )
             slider.set(val)
             slider.pack(fill="x", pady=(4, 0))
@@ -128,8 +183,20 @@ class SettingsScreen(ctk.CTkFrame):
         ctk.CTkLabel(txt, text="Enable ML Prediction", font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w")
         ctk.CTkLabel(txt, text="Use AI to predict potential crashes", font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_SECONDARY).pack(anchor="w")
 
-        switch = ctk.CTkSwitch(ti, text="", onvalue=1, offvalue=0, progress_color=ORANGE, button_color=TEXT_PRIMARY, fg_color=TEXT_MUTED)
-        switch.select()
+        def on_ml_toggle():
+            self._settings["ml_enabled"] = bool(switch.get())
+            self._schedule_save()
+
+        switch = ctk.CTkSwitch(
+            ti, text="", onvalue=1, offvalue=0, 
+            progress_color=ORANGE, button_color=TEXT_PRIMARY, fg_color=TEXT_MUTED,
+            command=on_ml_toggle
+        )
+        if self._settings.get("ml_enabled", True):
+            switch.select()
+        else:
+            switch.deselect()
+            
         switch.pack(side="right")
 
         info_row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -147,11 +214,12 @@ class SettingsScreen(ctk.CTkFrame):
 
     def _build_notifications(self, parent, header):
         notifs = [
-            ("Email Notifications",  "Receive alerts via email",       True),
-            ("Slack Integration",    "Push alerts to Slack channel",   False),
-            ("SMS Alerts",           "Critical alerts via SMS",        False),
+            ("Email Notifications",  "Receive alerts via email",       self._settings.get("notif_email", True), "notif_email"),
+            ("Slack Integration",    "Push alerts to Slack channel",   self._settings.get("notif_slack", False), "notif_slack"),
+            ("SMS Alerts",           "Critical alerts via SMS",        self._settings.get("notif_sms", False), "notif_sms"),
         ]
-        for label, sub, default_on in notifs:
+        
+        for label, sub, default_on, key in notifs:
             row = ctk.CTkFrame(parent, fg_color=BG_CARD_INNER, corner_radius=10, border_width=1, border_color=BORDER)
             row.pack(fill="x", pady=4)
             ri = ctk.CTkFrame(row, fg_color="transparent")
@@ -162,16 +230,54 @@ class SettingsScreen(ctk.CTkFrame):
             ctk.CTkLabel(txt, text=label, font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w")
             ctk.CTkLabel(txt, text=sub, font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_SECONDARY).pack(anchor="w")
 
+            def make_cmd(k=key):
+                # We need a closure to capture the specific key, but we also 
+                # need to find the specific switch widget below. We'll do a late-binding trick
+                # by passing the switch instance into the lambda.
+                pass 
+                
             switch = ctk.CTkSwitch(ri, text="", progress_color=ORANGE, button_color=TEXT_PRIMARY, fg_color=TEXT_MUTED)
+            
+            # Late-binding the switch instance 
+            switch.configure(command=lambda w=switch, k=key: self._on_notif_toggle(k, w.get()))
+
             if default_on:
                 switch.select()
+            else:
+                switch.deselect()
             switch.pack(side="right")
+            
+    def _on_notif_toggle(self, key, val):
+        self._settings[key] = bool(val)
+        self._schedule_save()
 
     def _build_users(self, parent, header):
+        def on_add_user():
+            # Simply create a temporary popup to suggest logging out and using signup
+            popup = ctk.CTkToplevel(self)
+            popup.title("Add User")
+            popup.geometry("300x150")
+            popup.attributes("-topmost", True)
+            popup.configure(fg_color=BG_ROOT)
+            
+            ctk.CTkLabel(
+                popup, 
+                text="To add a new user to the organization,\nplease log out and use the Sign Up page.", 
+                font=ctk.CTkFont(family=FONT_FAMILY, size=12),
+                text_color=TEXT_PRIMARY
+            ).pack(expand=True, padx=20, pady=20)
+            
+            ctk.CTkButton(
+                popup, text="OK", width=80, corner_radius=8,
+                fg_color=ORANGE, hover_color="#ea6c10",
+                command=popup.destroy
+            ).pack(pady=(0, 20))
+
         ctk.CTkButton(
             header, text="Add User", width=90, height=34, corner_radius=8,
             fg_color=ORANGE, hover_color="#ea6c10",
             font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
+            command=on_add_user
         ).pack(side="right")
 
         # Try to fetch live users from Firestore via backend; fall back to static data

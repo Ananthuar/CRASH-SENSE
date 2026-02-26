@@ -55,12 +55,13 @@ TOP_N = 15                 # Number of top processes to return
 CLEANUP_INTERVAL = 30      # Seconds between dead-PID cleanup passes
 
 # Detector thresholds
-MEM_LEAK_SLOPE_MB_MIN = 1.0     # MB/min growth to flag as leak
+MEM_LEAK_SLOPE_MB_MIN = 5.0     # MB/min growth to flag as leak
 MEM_LEAK_MIN_SAMPLES = 40       # ~2 minutes of history needed
 CPU_RUNAWAY_PERCENT = 90.0      # CPU% threshold
 CPU_RUNAWAY_MIN_SAMPLES = 10    # ~30 seconds sustained
-THREAD_GROWTH_PERCENT = 50.0    # % increase to flag
-THREAD_MIN_INITIAL = 5          # Don't flag if started with < 5 threads
+THREAD_GROWTH_PERCENT = 100.0   # % increase to flag
+THREAD_MIN_INITIAL = 20         # Don't flag if started with < 20 threads
+THREAD_MAX_COUNT = 50           # Absolute maximum threads per process
 FD_EXHAUSTION_PERCENT = 80.0    # % of ulimit
 OOM_RAM_PERCENT = 40.0          # Single process using > this % of RAM
 
@@ -176,14 +177,29 @@ def detect_cpu_runaway(pid: int, name: str, history: list[dict]) -> dict | None:
 
 def detect_thread_explosion(pid: int, name: str, history: list[dict]) -> dict | None:
     """
-    Detect rapid thread count growth.
-
-    Compares current thread count to the value 20 samples ago (~1 min).
+    Detect rapid thread count growth, or simply exceeding the absolute limit.
     """
+    if len(history) == 0:
+        return None
+        
+    current_threads = history[-1].get("num_threads", 0)
+
+    # Absolute limit check (User Setting: Max Threads Per Process)
+    if current_threads > THREAD_MAX_COUNT:
+        return {
+            "type":     "high_thread_count",
+            "severity": Severity.HIGH,
+            "pid":      pid,
+            "name":     name,
+            "title":    "High Thread Count",
+            "detail":   f"Process is using {current_threads} threads (limit: {THREAD_MAX_COUNT})",
+            "metric":   f"{current_threads} threads",
+        }
+
+    # Growth check requires at least 20 samples (~1 min)
     if len(history) < 20:
         return None
 
-    current_threads = history[-1].get("num_threads", 0)
     past_threads = history[-20].get("num_threads", 0)
 
     if past_threads < THREAD_MIN_INITIAL:
@@ -380,9 +396,15 @@ class ProcessMonitor:
 
         # Health score: 100 = perfect, deduct for each alert by severity
         score = 100
-        score -= critical * 25
-        score -= high * 15
-        score -= medium * 5
+        if critical > 0:
+            # No cap for critical; -25 for first, -10 for subsequent
+            score -= 25 + (critical - 1) * 10
+        if high > 0:
+            # Max -40 deduction; -15 for first, -5 for subsequent
+            score -= min(40, 15 + (high - 1) * 5)
+        if medium > 0:
+            # Max -20 deduction; -5 for first, -2 for subsequent
+            score -= min(20, 5 + (medium - 1) * 2)
         score = max(0, min(100, score))
 
         # Record in trend
