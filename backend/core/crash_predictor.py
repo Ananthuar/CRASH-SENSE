@@ -16,7 +16,7 @@ Combines TWO models for robust crash prediction:
    model might miss.
 
 The final crash probability is a weighted ensemble of both models:
-    P(crash) = 0.7 × RF_probability + 0.3 × IF_anomaly_score
+    P(crash) = WEIGHT_RF × RF_probability + WEIGHT_ANOMALY × IF_anomaly_score
 
 Architecture:
     SystemMonitor (collector.py)
@@ -41,6 +41,8 @@ Usage:
 
 import os
 import time
+import json
+import threading
 import numpy as np
 import psutil
 from collections import deque
@@ -52,8 +54,15 @@ from core.preprocessor import data_scaler
 
 
 # ─────────────────────────────────────────────────────────────────
-#  Constants
+#  Configuration & Constants
 # ─────────────────────────────────────────────────────────────────
+
+# Ensemble weights (Configurable)
+WEIGHT_RF = 0.7        # Pre-trained model weight
+WEIGHT_ANOMALY = 0.3   # Anomaly detector weight
+
+# Alert configuration
+ALERT_COOLDOWN_SEC = 30  # Minimum seconds before escalating or re-alerting heavily
 
 # Features for the pre-trained Random Forest (must match train_model.py)
 _RF_FEATURE_NAMES = [
@@ -69,6 +78,13 @@ _RF_FEATURE_NAMES = [
     "io_write_intensity",
     "net_send_intensity",
     "net_recv_intensity",
+    "cpu_acceleration",
+    "memory_acceleration",
+    "window_divergence_cpu",
+    "window_divergence_memory",
+    "resource_ratio",
+    "cpu_trend",
+    "memory_trend"
 ]
 
 # Raw metric keys from SystemMonitor
@@ -78,9 +94,65 @@ _METRIC_KEYS = [
     "net_bytes_sent", "net_bytes_recv",
 ]
 
-# Ensemble weights
-_RF_WEIGHT = 0.7   # Pre-trained model weight
-_IF_WEIGHT = 0.3   # Anomaly detector weight
+
+# ─────────────────────────────────────────────────────────────────
+#  Real Crash Logger
+# ─────────────────────────────────────────────────────────────────
+
+class RealCrashLogger:
+    """
+    Handles asynchronous saving of real crash events to disk.
+    Non-blocking to ensure the live prediction loop is never stalled.
+    """
+    def __init__(self, log_dir="backend/data/real_logs"):
+        self.log_dir = os.path.abspath(log_dir)
+        os.makedirs(self.log_dir, exist_ok=True)
+        # Prevent spamming: only allow one log write every 60 seconds
+        self._last_log_time = 0 
+        self._cooldown = 60
+
+    def log_event_async(self, history, features, probability, label=1):
+        """Spawns a background thread to format and save the log."""
+        now = time.time()
+        if now - self._last_log_time < self._cooldown:
+            return  # Still in cooldown
+
+        self._last_log_time = now
+        
+        # Snapshot the data before passing to thread
+        history_snapshot = list(history)
+        if hasattr(features, "tolist"):
+            features_snapshot = features.tolist()[0]
+        else:
+            features_snapshot = features
+        
+        thread = threading.Thread(
+            target=self._write_log,
+            args=(history_snapshot, features_snapshot, probability, label, now),
+            daemon=True
+        )
+        thread.start()
+
+    def _write_log(self, history, features, probability, label, timestamp):
+        try:
+            filename = f"crash_log_{int(timestamp)}.json"
+            filepath = os.path.join(self.log_dir, filename)
+            
+            payload = {
+                "timestamp": timestamp,
+                "label": label,
+                "probability": probability,
+                "engineered_features": dict(zip(_RF_FEATURE_NAMES, features)),
+                "raw_metrics_buffer": history  # The 60-120s rolling buffer
+            }
+            
+            with open(filepath, "w") as f:
+                json.dump(payload, f, indent=2)
+            print(f"[CrashLogger] Flushed real crash log to {filename}")
+        except Exception as e:
+            print(f"[CrashLogger] Error writing log: {e}")
+
+_crash_logger = RealCrashLogger()
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -186,9 +258,11 @@ class HybridCrashPredictor:
         self._if_fitted = False
         self._if_last_fit = 0
 
-        # ── Prediction history ───────────────────────────────────
+        # ── Prediction history & Alerting ────────────────────────
         self._prediction_history = deque(maxlen=60)
         self._last_probability = 0.0
+        self._last_alert_time = 0
+        self._last_risk_level = "Low"
 
     def _load_pretrained_model(self):
         """Load the pre-trained Random Forest from disk."""
@@ -201,10 +275,16 @@ class HybridCrashPredictor:
         try:
             bundle = joblib.load(model_path)
             self._rf_model = bundle["model"]
-            self._rf_loaded = True
-            print(f"[CrashPredictor] Loaded pre-trained model "
-                  f"(accuracy={bundle.get('accuracy', '?'):.4f}, "
-                  f"v{bundle.get('version', '?')})")
+            
+            # Check if model has exactly the right number of features
+            if hasattr(self._rf_model, "n_features_in_") and self._rf_model.n_features_in_ != len(_RF_FEATURE_NAMES):
+                 print(f"[CrashPredictor] Warning: Model expects {self._rf_model.n_features_in_} features, but we provide {len(_RF_FEATURE_NAMES)}.")
+                 print("                 You must run 'python backend/train_model.py' first.")
+            else:
+                 self._rf_loaded = True
+                 print(f"[CrashPredictor] Loaded pre-trained model "
+                       f"(accuracy={bundle.get('accuracy', '?'):.4f}, "
+                       f"v{bundle.get('version', '?')})")
         except FileNotFoundError:
             print(f"[CrashPredictor] Warning: No pre-trained model at {model_path}")
             print("                 Run 'python train_model.py' to train one.")
@@ -217,19 +297,14 @@ class HybridCrashPredictor:
 
     def _compute_rf_features(self, history: list[dict]) -> np.ndarray:
         """
-        Compute the 12 features expected by the pre-trained Random Forest.
-
-        Uses the last `window_size` raw metrics to compute:
-        - cpu_percent, memory_percent, disk_usage_percent (current values)
-        - cpu_std, memory_std (recent volatility)
-        - cpu/memory rate of change
-        - cpu_memory_product (interaction)
-        - I/O and network intensity (normalized 0-1)
+        Compute the features expected by the pre-trained Random Forest.
+        Includes base features and newly added advanced features.
         """
-        if len(history) < 4:
+        if len(history) < 10:
             return None
 
         recent = history[-min(self.window_size, len(history)):]
+        long_term = history[-min(self.window_size * 3, len(history)):]
 
         # Current values (last snapshot)
         latest = recent[-1]
@@ -243,36 +318,75 @@ class HybridCrashPredictor:
         except Exception:
             disk_pct = 0
 
-        # Volatility (std of recent window)
-        cpu_vals = [m.get("cpu_percent", 0) for m in recent]
-        mem_vals = [m.get("memory_percent", 0) for m in recent]
-        cpu_std = float(np.std(cpu_vals))
-        mem_std = float(np.std(mem_vals))
+        # Extract arrays
+        cpu_vals_recent = [m.get("cpu_percent", 0) for m in recent]
+        mem_vals_recent = [m.get("memory_percent", 0) for m in recent]
+        cpu_vals_long = [m.get("cpu_percent", 0) for m in long_term]
+        mem_vals_long = [m.get("memory_percent", 0) for m in long_term]
 
-        # Rate of change (second half mean - first half mean)
-        half = len(recent) // 2
-        if half > 0:
-            cpu_roc = np.mean(cpu_vals[half:]) - np.mean(cpu_vals[:half])
-            mem_roc = np.mean(mem_vals[half:]) - np.mean(mem_vals[:half])
-        else:
-            cpu_roc = 0
-            mem_roc = 0
+        # 1. Volatility (std of recent window)
+        cpu_std = float(np.std(cpu_vals_recent))
+        mem_std = float(np.std(mem_vals_recent))
 
-        # CPU × Memory interaction
+        # 2. Rate of change (second half mean - first half mean)
+        n = len(recent)
+        half = n // 2
+        q1 = recent[:half//2]
+        q2 = recent[half//2:half]
+        q3 = recent[half:half + half//2]
+        q4 = recent[half + half//2:]
+        
+        # Means of halves for RoC
+        cpu_h1 = np.mean(cpu_vals_recent[:half])
+        cpu_h2 = np.mean(cpu_vals_recent[half:])
+        mem_h1 = np.mean(mem_vals_recent[:half])
+        mem_h2 = np.mean(mem_vals_recent[half:])
+        
+        cpu_roc = cpu_h2 - cpu_h1
+        mem_roc = mem_h2 - mem_h1
+
+        # 3. CPU × Memory interaction
         cpu_mem_prod = (cpu_pct * mem_pct) / 10000.0
 
-        # I/O intensity (normalized using log scale then capped at 1)
+        # 4. I/O intensity (normalized using log scale then capped at 1)
         disk_read = latest.get("disk_read_bytes", 0)
         disk_write = latest.get("disk_write_bytes", 0)
         net_sent = latest.get("net_bytes_sent", 0)
         net_recv = latest.get("net_bytes_recv", 0)
 
-        # Use log1p and normalize to ~0-1 range
-        # These thresholds approximate heavy I/O across typical systems
         io_read_int = min(np.log1p(disk_read) / 30.0, 1.0)
         io_write_int = min(np.log1p(disk_write) / 30.0, 1.0)
         net_send_int = min(np.log1p(net_sent) / 28.0, 1.0)
         net_recv_int = min(np.log1p(net_recv) / 28.0, 1.0)
+
+        # ─────────────────────────────────────────────────────────────
+        # NEW ENHANCED FEATURES
+        # ─────────────────────────────────────────────────────────────
+        
+        # 5. Second Derivative (Acceleration)
+        # roc_recent - roc_older
+        if len(q1) > 0 and len(q4) > 0:
+            cpu_roc_older = np.mean([m.get("cpu_percent", 0) for m in q2]) - np.mean([m.get("cpu_percent", 0) for m in q1])
+            cpu_roc_newer = np.mean([m.get("cpu_percent", 0) for m in q4]) - np.mean([m.get("cpu_percent", 0) for m in q3])
+            cpu_accel = cpu_roc_newer - cpu_roc_older
+            
+            mem_roc_older = np.mean([m.get("memory_percent", 0) for m in q2]) - np.mean([m.get("memory_percent", 0) for m in q1])
+            mem_roc_newer = np.mean([m.get("memory_percent", 0) for m in q4]) - np.mean([m.get("memory_percent", 0) for m in q3])
+            mem_accel = mem_roc_newer - mem_roc_older
+        else:
+            cpu_accel, mem_accel = 0.0, 0.0
+
+        # 6. Window Divergence (Sudden Spike vs long term baseline)
+        win_div_cpu = np.mean(cpu_vals_recent[-5:]) - np.mean(cpu_vals_long) if len(cpu_vals_recent) >= 5 else 0
+        win_div_mem = np.mean(mem_vals_recent[-5:]) - np.mean(mem_vals_long) if len(mem_vals_recent) >= 5 else 0
+
+        # 7. Resource Ratio
+        res_ratio = cpu_pct / (mem_pct + 1e-8)
+
+        # 8. Trend Analysis (Linear Regression Slope on Recent Window)
+        # Slope = (y[-1] - y[0]) / n for lightweight linear trend proxy
+        cpu_trend = (cpu_vals_recent[-1] - cpu_vals_recent[0]) / n
+        mem_trend = (mem_vals_recent[-1] - mem_vals_recent[0]) / n
 
         features = np.array([[
             cpu_pct,
@@ -287,6 +401,13 @@ class HybridCrashPredictor:
             io_write_int,
             net_send_int,
             net_recv_int,
+            cpu_accel,
+            mem_accel,
+            win_div_cpu,
+            win_div_mem,
+            res_ratio,
+            cpu_trend,
+            mem_trend
         ]])
 
         return features
@@ -333,16 +454,41 @@ class HybridCrashPredictor:
         prob = 1.0 / (1.0 + np.exp(-scale * raw))
         return float(np.clip(prob, 0.0, 1.0))
 
-    @staticmethod
-    def _get_risk_level(probability: float) -> str:
-        if probability < 0.25:
-            return "Low"
-        elif probability < 0.50:
-            return "Medium"
+    def _get_risk_level(self, probability: float, now: float) -> str:
+        """
+        Get risk level with cooldown logic to prevent alert spamming.
+        """
+        # Raw tier calculation
+        if probability < 0.40:
+            target_level = "Low"
+            target_severity = 0
         elif probability < 0.75:
-            return "High"
+            target_level = "Elevated"
+            target_severity = 1
         else:
-            return "Critical"
+            target_level = "Critical"
+            target_severity = 2
+
+        # Severity mappings
+        severities = {"Low": 0, "Elevated": 1, "Critical": 2}
+        current_severity = severities.get(self._last_risk_level, 0)
+        
+        # If it's escalating or critical, don't delay it.
+        # But if it's fluctuating back down, apply a cooldown.
+        if target_severity >= current_severity or target_severity == 2:
+            self._last_risk_level = target_level
+            self._last_alert_time = now
+            return target_level
+            
+        # At this point, target severity is strictly lower than current.
+        if now - self._last_alert_time < ALERT_COOLDOWN_SEC:
+             # Maintain the higher active alert level
+             return self._last_risk_level
+             
+        # Cooldown expired, drop down to the target level
+        self._last_risk_level = target_level
+        self._last_alert_time = now
+        return target_level
 
     # ─────────────────────────────────────────────────────────────
     #  Risk Factor Analysis
@@ -442,10 +588,30 @@ class HybridCrashPredictor:
         Returns dict with: crash_probability, crash_percent, risk_level,
         top_risk_factors, suggested_actions, model_info, timestamp.
         """
-        history = system_monitor.get_history()
         now = time.time()
 
-        if len(history) < 5:
+        # ── ML globally disabled by user in Settings ─────────────
+        if not getattr(self, "_ml_enabled", True):
+            return {
+                "crash_probability": 0.0,
+                "crash_percent":     0,
+                "risk_level":        "Disabled",
+                "top_risk_factors":  [],
+                "suggested_actions": [{
+                    "title":    "ML Prediction Disabled",
+                    "desc":     "Re-enable ML Prediction in Settings to activate crash forecasting.",
+                    "priority": "Info",
+                    "severity": 0.0,
+                }],
+                "model_info": {"rf_loaded": self._rf_loaded, "if_fitted": self._if_fitted,
+                               "ml_enabled": False},
+                "timestamp":   now,
+                "data_points": 0,
+            }
+
+        history = system_monitor.get_history()
+
+        if len(history) < 10:
             return {
                 "crash_probability": 0.0,
                 "crash_percent":     0,
@@ -453,7 +619,7 @@ class HybridCrashPredictor:
                 "top_risk_factors":  [],
                 "suggested_actions": [{
                     "title": "Collecting Data",
-                    "desc":  f"Need {5 - len(history)} more data points...",
+                    "desc":  f"Need {10 - len(history)} more data points...",
                     "priority": "Info", "severity": 0.0,
                 }],
                 "model_info": {"rf_loaded": self._rf_loaded, "if_fitted": self._if_fitted},
@@ -463,6 +629,7 @@ class HybridCrashPredictor:
 
         # ── Random Forest prediction ─────────────────────────────
         rf_prob = 0.0
+        rf_features = None
         if self._rf_loaded:
             rf_features = self._compute_rf_features(history)
             if rf_features is not None:
@@ -496,7 +663,7 @@ class HybridCrashPredictor:
 
         # ── Ensemble ─────────────────────────────────────────────
         if self._rf_loaded and self._if_fitted:
-            probability = _RF_WEIGHT * rf_prob + _IF_WEIGHT * if_prob
+            probability = WEIGHT_RF * rf_prob + WEIGHT_ANOMALY * if_prob
         elif self._rf_loaded:
             probability = rf_prob  # Only RF available
         elif self._if_fitted:
@@ -506,6 +673,10 @@ class HybridCrashPredictor:
 
         probability = float(np.clip(probability, 0.0, 1.0))
         self._last_probability = probability
+        
+        # ── Real Crash Logging Trigger ───────────────────────────
+        if probability >= 0.85 and rf_features is not None:
+             _crash_logger.log_event_async(history, rf_features, probability, label=1)
 
         # Store in history
         self._prediction_history.append({
@@ -515,14 +686,15 @@ class HybridCrashPredictor:
             "timestamp":   now,
         })
 
-        # Analyze risk factors & actions
+        # Analyze risk factors & actions & risk level (with cooldown)
+        risk_level = self._get_risk_level(probability, now)
         risk_factors = self._analyze_risk_factors(history)
         actions = self._get_suggested_actions(risk_factors)
 
         return {
             "crash_probability": round(probability, 4),
             "crash_percent":     int(probability * 100),
-            "risk_level":        self._get_risk_level(probability),
+            "risk_level":        risk_level,
             "top_risk_factors":  risk_factors,
             "suggested_actions": actions,
             "model_info": {
@@ -530,7 +702,7 @@ class HybridCrashPredictor:
                 "rf_probability": round(rf_prob, 4),
                 "if_fitted":     self._if_fitted,
                 "if_probability": round(if_prob, 4),
-                "ensemble":      f"{_RF_WEIGHT:.0%} RF + {_IF_WEIGHT:.0%} IF",
+                "ensemble":      f"{WEIGHT_RF:.0%} RF + {WEIGHT_ANOMALY:.0%} IF",
             },
             "timestamp":   now,
             "data_points": len(history),

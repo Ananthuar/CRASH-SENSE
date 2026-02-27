@@ -159,11 +159,14 @@ def create_app(config_name=None):
     # ── Route: User Settings (Get) ──────────────────────────────
     @app.route('/api/users/<uid>/settings', methods=['GET'])
     def get_user_settings(uid):
-        """Fetch a user's Firestore config."""
+        """Fetch a user's Firestore config and apply to monitor."""
         try:
             settings = firebase_service.get_user_settings(uid)
             if settings is None:
                 return jsonify({}), 200 # Return empty dict if no settings exist yet
+            
+            # Apply to backend immediately upon fetch
+            _apply_monitor_settings(settings)
             return jsonify(settings)
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
@@ -175,20 +178,23 @@ def create_app(config_name=None):
         data = request.get_json(force=True, silent=True) or {}
         try:
             updated = firebase_service.update_user_settings(uid, data)
-            
-            # Now, apply these directly to the live process monitor
-            if "cpu_alert" in updated:
-                process_monitor.CPU_RUNAWAY_PERCENT = float(updated["cpu_alert"])
-            if "memory_alert" in updated:
-                process_monitor.OOM_RAM_PERCENT = float(updated["memory_alert"])
-            if "thread_alert" in updated:
-                process_monitor.THREAD_MAX_COUNT = int(updated["thread_alert"])
-            if "response_alert" in updated:
-                process_monitor.SCAN_INTERVAL = max(1, int(updated["response_alert"]))
-                
+            _apply_monitor_settings(updated)
             return jsonify(updated)
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
+
+    def _apply_monitor_settings(settings: dict):
+        """Helper to mutate the absolute module-level threshold variables in the detector."""
+        import core.process_monitor as pm
+        
+        if "cpu_alert" in settings:
+            pm.CPU_RUNAWAY_PERCENT = float(settings["cpu_alert"])
+        if "memory_alert" in settings:
+            pm.OOM_RAM_PERCENT = float(settings["memory_alert"])
+        if "thread_alert" in settings:
+            pm.THREAD_MAX_COUNT = int(settings["thread_alert"])
+        if "response_alert" in settings:
+            pm.SCAN_INTERVAL = max(1, int(settings["response_alert"]))
 
     # ── Route: List All Users ────────────────────────────────────
     @app.route('/api/users', methods=['GET'])
@@ -268,6 +274,156 @@ def create_app(config_name=None):
     def get_process_alerts_trend():
         """Return recent health score history for charts."""
         return jsonify(process_monitor.get_health_trend())
+
+    @app.route('/api/process-alerts/new', methods=['GET'])
+    def get_new_process_alerts():
+        """Return alerts detected after the given 'since' Unix timestamp.
+        
+        Query param:
+            since (float): Unix timestamp. Only alerts newer than this are returned.
+        
+        This endpoint enables efficient proactive polling so the desktop can
+        fire a warning notification as soon as a crash precursor is first detected,
+        without re-processing alerts it has already seen.
+        """
+        try:
+            since = float(request.args.get('since', 0))
+        except (TypeError, ValueError):
+            since = 0.0
+
+        all_alerts = process_monitor.get_alerts()
+        new_alerts = [a for a in all_alerts if a.get("detected_at", 0) > since]
+        return jsonify({
+            "alerts": new_alerts,
+            "server_time": __import__('time').time(),
+        })
+
+    @app.route('/api/process-history/<int:pid>', methods=['GET'])
+    def get_process_history(pid):
+        """Return the snapshot history (CPU, memory, threads, FDs) for a single PID.
+        Used by the Crash Details screen to render per-process resource charts.
+        """
+        history = process_monitor.get_process_history(pid)
+        alerts  = process_monitor.get_alerts_for_pid(pid)
+        return jsonify({
+            "pid":     pid,
+            "history": history,
+            "alerts":  alerts,
+        })
+
+    @app.route('/api/logs', methods=['GET'])
+    def get_logs():
+        """Return structured log entries derived from live process-monitor data.
+
+        Each entry matches the schema:
+            { time, level, module, type, msg }
+
+        Sources:
+          1. Active alerts  → ERROR / WARN entries per alert
+          2. Health trend   → INFO entries showing score transitions
+        """
+        import time as _time
+        from datetime import datetime as _dt
+
+        entries = []
+
+        # ── Source 1: active alerts ─────────────────────────────────
+        _sev_level = {"critical": "ERROR", "high": "ERROR",
+                      "medium": "WARN",  "low": "INFO"}
+        for alert in process_monitor.get_alerts():
+            ts  = alert.get("timestamp", _time.time())
+            entries.append({
+                "time":   _dt.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
+                "level":  _sev_level.get(alert.get("severity", "low"), "INFO"),
+                "module": alert.get("name", "Unknown")[:20],
+                "type":   alert.get("type", "").replace("_", " ").title(),
+                "msg":    alert.get("detail", alert.get("title", "")),
+                "pid":    alert.get("pid"),
+                "severity": alert.get("severity", "low"),
+            })
+
+        # ── Source 2: health trend snapshots (INFO / WARN) ──────────
+        for snap in process_monitor.get_health_trend():
+            score = snap.get("health_score", 100)
+            ts    = snap.get("timestamp", _time.time())
+            if score < 50:
+                level = "WARN"
+                msg   = f"System health degraded: score={score}"
+            elif score < 80:
+                level = "INFO"
+                msg   = f"System health warning: score={score}"
+            else:
+                level = "INFO"
+                msg   = f"System health nominal: score={score}"
+            entries.append({
+                "time":   _dt.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
+                "level":  level,
+                "module": "ProcessMonitor",
+                "type":   "Health Check",
+                "msg":    msg,
+                "pid":    None,
+                "severity": "low" if score >= 80 else "medium" if score >= 50 else "high",
+            })
+
+        # Sort newest first
+        entries.sort(key=lambda e: e["time"], reverse=True)
+
+        # Compute analytics
+        error_count = sum(1 for e in entries if e["level"] == "ERROR")
+        warn_count  = sum(1 for e in entries if e["level"] == "WARN")
+        # Most affected module
+        from collections import Counter
+        mod_counts = Counter(e["module"] for e in entries if e["level"] == "ERROR")
+        top_module = mod_counts.most_common(1)[0] if mod_counts else ("None", 0)
+
+        return jsonify({
+            "entries":          entries,
+            "total":            len(entries),
+            "error_count":      error_count,
+            "warn_count":       warn_count,
+            "top_module":       top_module[0],
+            "top_module_count": top_module[1],
+        })
+
+    @app.route('/api/ml-status', methods=['GET'])
+    def get_ml_status():
+        """Return ML model metadata and enabled state."""
+        import os, joblib
+        model_path = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "models", "crash_rf_model.joblib"
+        ))
+        model_version  = "N/A"
+        accuracy       = None
+        trained_at     = None
+        model_loaded   = crash_predictor._rf_loaded
+
+        if os.path.exists(model_path):
+            try:
+                bundle = joblib.load(model_path)
+                model_version = bundle.get("version", "unknown")
+                accuracy      = bundle.get("accuracy", None)
+                stat_mtime    = os.path.getmtime(model_path)
+                import datetime as _dt
+                trained_at = _dt.datetime.fromtimestamp(stat_mtime).strftime("%d %b %Y, %H:%M")
+            except Exception:
+                pass
+
+        return jsonify({
+            "enabled":       getattr(crash_predictor, "_ml_enabled", True),
+            "model_version": f"v{model_version}",
+            "accuracy":      f"{accuracy:.4f}" if accuracy is not None else "N/A",
+            "trained_at":    trained_at or "Unknown",
+            "model_loaded":  model_loaded,
+        })
+
+    @app.route('/api/ml-status', methods=['PUT'])
+    def set_ml_status():
+        """Enable or disable ML prediction globally."""
+        data = request.get_json(silent=True) or {}
+        enabled = bool(data.get("enabled", True))
+        crash_predictor._ml_enabled = enabled
+        return jsonify({"enabled": enabled})
 
     return app
 

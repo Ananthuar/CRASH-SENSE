@@ -4,32 +4,11 @@ CrashSense — Synthetic Training Data Generator & Model Trainer
 
 Generates a synthetic dataset of system metric snapshots labelled as
 crash-likely (1) or healthy (0), then trains a Random Forest classifier.
+It also looks for REAL crash logs and adaptively merges them into the
+training dataset.
 
 The dataset uses PERCENTAGE / NORMALIZED features so the model is
 system-agnostic — works on any hardware regardless of specs.
-
-Features (all 0–1 or 0–100 range):
-    1.  cpu_percent          (0–100)
-    2.  memory_percent       (0–100)
-    3.  disk_usage_percent   (0–100)
-    4.  cpu_std              (recent volatility)
-    5.  memory_std           (recent volatility)
-    6.  cpu_rate_of_change   (acceleration)
-    7.  memory_rate_of_change
-    8.  cpu_memory_product   (interaction: both high = dangerous)
-    9.  io_read_intensity    (0–1, normalized)
-    10. io_write_intensity   (0–1, normalized)
-    11. net_send_intensity   (0–1, normalized)
-    12. net_recv_intensity   (0–1, normalized)
-
-Crash patterns modeled:
-    - CPU exhaustion (sustained > 90%)
-    - Memory exhaustion (sustained > 85%)
-    - CPU + Memory combined stress
-    - I/O storms (high disk or network activity)
-    - Rapid spikes (sudden resource jumps)
-    - Gradual degradation (slow memory leak pattern)
-    - Cascading failure (high everything)
 
 Usage:
     python train_model.py
@@ -37,6 +16,8 @@ Usage:
 """
 
 import os
+import glob
+import json
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
@@ -62,6 +43,13 @@ FEATURE_NAMES = [
     "io_write_intensity",
     "net_send_intensity",
     "net_recv_intensity",
+    "cpu_acceleration",
+    "memory_acceleration",
+    "window_divergence_cpu",
+    "window_divergence_memory",
+    "resource_ratio",
+    "cpu_trend",
+    "memory_trend"
 ]
 
 
@@ -69,8 +57,62 @@ def _clip(arr, lo=0.0, hi=100.0):
     return np.clip(arr, lo, hi)
 
 
+# ─────────────────────────────────────────────────────────────────
+#  Synthetic Data Generation
+# ─────────────────────────────────────────────────────────────────
+
+def _add_new_features(data, mode="healthy"):
+    """Helper to add the 7 new engineered features based on the base metrics."""
+    n = len(data["cpu_percent"])
+    data["cpu_memory_product"] = data["cpu_percent"] * data["memory_percent"] / 10000.0
+    data["resource_ratio"] = data["cpu_percent"] / (data["memory_percent"] + 1e-8)
+    
+    if mode == "healthy" or mode == "moderate":
+        data["cpu_acceleration"] = np.random.normal(0, 1, n)
+        data["memory_acceleration"] = np.random.normal(0, 0.5, n)
+        data["window_divergence_cpu"] = np.random.normal(0, 2, n)
+        data["window_divergence_memory"] = np.random.normal(0, 2, n)
+        data["cpu_trend"] = np.random.normal(0, 0.5, n)
+        data["memory_trend"] = np.random.normal(0, 0.2, n)
+    elif mode == "cpu_exhaustion":
+        data["cpu_acceleration"] = np.random.normal(2, 2, n)
+        data["memory_acceleration"] = np.random.normal(0, 1, n)
+        data["window_divergence_cpu"] = np.random.normal(15, 5, n)
+        data["window_divergence_memory"] = np.random.normal(2, 3, n)
+        data["cpu_trend"] = np.random.normal(1, 1, n)
+        data["memory_trend"] = np.random.normal(0, 0.5, n)
+    elif mode == "memory_exhaustion":
+        data["cpu_acceleration"] = np.random.normal(0, 2, n)
+        data["memory_acceleration"] = np.random.normal(1.5, 1, n)
+        data["window_divergence_cpu"] = np.random.normal(2, 5, n)
+        data["window_divergence_memory"] = np.random.normal(12, 4, n)
+        data["cpu_trend"] = np.random.normal(0, 1, n)
+        data["memory_trend"] = np.random.normal(1, 0.5, n)
+    elif mode == "combined":
+        data["cpu_acceleration"] = np.random.normal(1.5, 2, n)
+        data["memory_acceleration"] = np.random.normal(1.5, 2, n)
+        data["window_divergence_cpu"] = np.random.normal(10, 5, n)
+        data["window_divergence_memory"] = np.random.normal(10, 5, n)
+        data["cpu_trend"] = np.random.normal(1, 1, n)
+        data["memory_trend"] = np.random.normal(1, 1, n)
+    elif mode == "spikes":
+        data["cpu_acceleration"] = np.random.normal(8, 4, n)
+        data["memory_acceleration"] = np.random.normal(5, 3, n)
+        data["window_divergence_cpu"] = np.random.normal(25, 10, n)
+        data["window_divergence_memory"] = np.random.normal(20, 8, n)
+        data["cpu_trend"] = np.random.normal(3, 2, n)
+        data["memory_trend"] = np.random.normal(2, 2, n)
+    elif mode == "degradation" or mode == "io_storm":
+        data["cpu_acceleration"] = np.random.normal(0.5, 1, n)
+        data["memory_acceleration"] = np.random.normal(0.5, 1, n)
+        data["window_divergence_cpu"] = np.random.normal(5, 3, n)
+        data["window_divergence_memory"] = np.random.normal(5, 3, n)
+        data["cpu_trend"] = np.random.normal(2, 1, n)
+        data["memory_trend"] = np.random.normal(3, 1, n)
+    
+    return data
+
 def generate_healthy_samples(n: int) -> pd.DataFrame:
-    """Generate realistic healthy system metric samples."""
     data = {
         "cpu_percent":           _clip(np.random.normal(30, 15, n)),
         "memory_percent":        _clip(np.random.normal(45, 12, n)),
@@ -79,22 +121,17 @@ def generate_healthy_samples(n: int) -> pd.DataFrame:
         "memory_std":            _clip(np.random.exponential(2, n), 0, 20),
         "cpu_rate_of_change":    np.random.normal(0, 3, n),
         "memory_rate_of_change": np.random.normal(0, 1.5, n),
-        "cpu_memory_product":    None,  # Computed below
         "io_read_intensity":     _clip(np.random.exponential(0.1, n), 0, 1),
         "io_write_intensity":    _clip(np.random.exponential(0.08, n), 0, 1),
         "net_send_intensity":    _clip(np.random.exponential(0.1, n), 0, 1),
         "net_recv_intensity":    _clip(np.random.exponential(0.12, n), 0, 1),
     }
-    data["cpu_memory_product"] = (
-        data["cpu_percent"] * data["memory_percent"] / 10000.0
-    )
+    data = _add_new_features(data, mode="healthy")
     df = pd.DataFrame(data)
     df["crash"] = 0
     return df
 
-
 def generate_cpu_exhaustion(n: int) -> pd.DataFrame:
-    """CPU sustained > 90% — typical runaway process."""
     data = {
         "cpu_percent":           _clip(np.random.normal(93, 4, n), 80, 100),
         "memory_percent":        _clip(np.random.normal(55, 15, n)),
@@ -103,20 +140,17 @@ def generate_cpu_exhaustion(n: int) -> pd.DataFrame:
         "memory_std":            _clip(np.random.exponential(3, n), 0, 20),
         "cpu_rate_of_change":    np.random.normal(5, 3, n),
         "memory_rate_of_change": np.random.normal(2, 2, n),
-        "cpu_memory_product":    None,
         "io_read_intensity":     _clip(np.random.exponential(0.2, n), 0, 1),
         "io_write_intensity":    _clip(np.random.exponential(0.15, n), 0, 1),
         "net_send_intensity":    _clip(np.random.exponential(0.1, n), 0, 1),
         "net_recv_intensity":    _clip(np.random.exponential(0.1, n), 0, 1),
     }
-    data["cpu_memory_product"] = data["cpu_percent"] * data["memory_percent"] / 10000.0
+    data = _add_new_features(data, mode="cpu_exhaustion")
     df = pd.DataFrame(data)
     df["crash"] = 1
     return df
 
-
 def generate_memory_exhaustion(n: int) -> pd.DataFrame:
-    """Memory > 85% — OOM risk."""
     data = {
         "cpu_percent":           _clip(np.random.normal(50, 20, n)),
         "memory_percent":        _clip(np.random.normal(90, 5, n), 78, 100),
@@ -125,20 +159,17 @@ def generate_memory_exhaustion(n: int) -> pd.DataFrame:
         "memory_std":            _clip(np.random.exponential(1.5, n), 0, 15),
         "cpu_rate_of_change":    np.random.normal(2, 3, n),
         "memory_rate_of_change": np.random.normal(3, 2, n),
-        "cpu_memory_product":    None,
         "io_read_intensity":     _clip(np.random.exponential(0.15, n), 0, 1),
         "io_write_intensity":    _clip(np.random.exponential(0.3, n), 0, 1),
         "net_send_intensity":    _clip(np.random.exponential(0.1, n), 0, 1),
         "net_recv_intensity":    _clip(np.random.exponential(0.1, n), 0, 1),
     }
-    data["cpu_memory_product"] = data["cpu_percent"] * data["memory_percent"] / 10000.0
+    data = _add_new_features(data, mode="memory_exhaustion")
     df = pd.DataFrame(data)
     df["crash"] = 1
     return df
 
-
 def generate_combined_stress(n: int) -> pd.DataFrame:
-    """Both CPU and memory high — most dangerous."""
     data = {
         "cpu_percent":           _clip(np.random.normal(88, 6, n), 75, 100),
         "memory_percent":        _clip(np.random.normal(85, 6, n), 72, 100),
@@ -147,20 +178,17 @@ def generate_combined_stress(n: int) -> pd.DataFrame:
         "memory_std":            _clip(np.random.exponential(4, n), 0, 20),
         "cpu_rate_of_change":    np.random.normal(4, 4, n),
         "memory_rate_of_change": np.random.normal(3, 3, n),
-        "cpu_memory_product":    None,
         "io_read_intensity":     _clip(np.random.exponential(0.3, n), 0, 1),
         "io_write_intensity":    _clip(np.random.exponential(0.25, n), 0, 1),
         "net_send_intensity":    _clip(np.random.exponential(0.2, n), 0, 1),
         "net_recv_intensity":    _clip(np.random.exponential(0.2, n), 0, 1),
     }
-    data["cpu_memory_product"] = data["cpu_percent"] * data["memory_percent"] / 10000.0
+    data = _add_new_features(data, mode="combined")
     df = pd.DataFrame(data)
     df["crash"] = 1
     return df
 
-
 def generate_io_storm(n: int) -> pd.DataFrame:
-    """Heavy I/O — disk thrashing or network flood."""
     data = {
         "cpu_percent":           _clip(np.random.normal(60, 15, n)),
         "memory_percent":        _clip(np.random.normal(65, 12, n)),
@@ -169,20 +197,17 @@ def generate_io_storm(n: int) -> pd.DataFrame:
         "memory_std":            _clip(np.random.exponential(3, n), 0, 20),
         "cpu_rate_of_change":    np.random.normal(3, 4, n),
         "memory_rate_of_change": np.random.normal(2, 2, n),
-        "cpu_memory_product":    None,
         "io_read_intensity":     _clip(np.random.normal(0.7, 0.15, n), 0.3, 1),
         "io_write_intensity":    _clip(np.random.normal(0.65, 0.15, n), 0.3, 1),
         "net_send_intensity":    _clip(np.random.normal(0.5, 0.2, n), 0, 1),
         "net_recv_intensity":    _clip(np.random.normal(0.55, 0.2, n), 0, 1),
     }
-    data["cpu_memory_product"] = data["cpu_percent"] * data["memory_percent"] / 10000.0
+    data = _add_new_features(data, mode="io_storm")
     df = pd.DataFrame(data)
     df["crash"] = 1
     return df
 
-
 def generate_rapid_spikes(n: int) -> pd.DataFrame:
-    """Sudden resource jumps — fork bomb, memory leak burst."""
     data = {
         "cpu_percent":           _clip(np.random.normal(70, 20, n)),
         "memory_percent":        _clip(np.random.normal(65, 15, n)),
@@ -191,21 +216,17 @@ def generate_rapid_spikes(n: int) -> pd.DataFrame:
         "memory_std":            _clip(np.random.normal(12, 4, n), 5, 30),
         "cpu_rate_of_change":    np.random.normal(15, 8, n),
         "memory_rate_of_change": np.random.normal(10, 5, n),
-        "cpu_memory_product":    None,
         "io_read_intensity":     _clip(np.random.exponential(0.2, n), 0, 1),
         "io_write_intensity":    _clip(np.random.exponential(0.2, n), 0, 1),
         "net_send_intensity":    _clip(np.random.exponential(0.15, n), 0, 1),
         "net_recv_intensity":    _clip(np.random.exponential(0.15, n), 0, 1),
     }
-    data["cpu_memory_product"] = data["cpu_percent"] * data["memory_percent"] / 10000.0
+    data = _add_new_features(data, mode="spikes")
     df = pd.DataFrame(data)
     df["crash"] = 1
     return df
 
-
 def generate_gradual_degradation(n: int) -> pd.DataFrame:
-    """Slow memory leak — memory creeping up over time."""
-    # Simulate time-ordered samples with rising memory
     t = np.linspace(0, 1, n)
     data = {
         "cpu_percent":           _clip(np.random.normal(45, 10, n) + t * 20),
@@ -215,21 +236,17 @@ def generate_gradual_degradation(n: int) -> pd.DataFrame:
         "memory_std":            _clip(np.random.exponential(1, n) + t * 3, 0, 15),
         "cpu_rate_of_change":    np.random.normal(1, 2, n) + t * 5,
         "memory_rate_of_change": np.random.normal(0.5, 1, n) + t * 8,
-        "cpu_memory_product":    None,
         "io_read_intensity":     _clip(np.random.exponential(0.1, n) + t * 0.2, 0, 1),
         "io_write_intensity":    _clip(np.random.exponential(0.1, n) + t * 0.3, 0, 1),
         "net_send_intensity":    _clip(np.random.exponential(0.08, n), 0, 1),
         "net_recv_intensity":    _clip(np.random.exponential(0.1, n), 0, 1),
     }
-    data["cpu_memory_product"] = data["cpu_percent"] * data["memory_percent"] / 10000.0
+    data = _add_new_features(data, mode="degradation")
     df = pd.DataFrame(data)
-    # First half healthy, second half crash-prone
     df["crash"] = (t > 0.5).astype(int)
     return df
 
-
 def generate_moderate_load(n: int) -> pd.DataFrame:
-    """Moderate but not dangerous load — should NOT be flagged as crash."""
     data = {
         "cpu_percent":           _clip(np.random.normal(60, 10, n)),
         "memory_percent":        _clip(np.random.normal(55, 10, n)),
@@ -238,30 +255,20 @@ def generate_moderate_load(n: int) -> pd.DataFrame:
         "memory_std":            _clip(np.random.exponential(3, n), 0, 15),
         "cpu_rate_of_change":    np.random.normal(1, 3, n),
         "memory_rate_of_change": np.random.normal(0.5, 2, n),
-        "cpu_memory_product":    None,
         "io_read_intensity":     _clip(np.random.exponential(0.15, n), 0, 1),
         "io_write_intensity":    _clip(np.random.exponential(0.12, n), 0, 1),
         "net_send_intensity":    _clip(np.random.exponential(0.15, n), 0, 1),
         "net_recv_intensity":    _clip(np.random.exponential(0.15, n), 0, 1),
     }
-    data["cpu_memory_product"] = data["cpu_percent"] * data["memory_percent"] / 10000.0
+    data = _add_new_features(data, mode="moderate")
     df = pd.DataFrame(data)
     df["crash"] = 0
     return df
 
-
-def generate_dataset() -> pd.DataFrame:
-    """
-    Generate the full synthetic training dataset.
-
-    Balanced roughly 55% healthy / 45% crash to avoid bias.
-    """
+def generate_synthetic_dataset() -> pd.DataFrame:
     parts = [
-        # Healthy samples (various normal workloads)
         generate_healthy_samples(2000),
         generate_moderate_load(1000),
-
-        # Crash patterns (diverse failure modes)
         generate_cpu_exhaustion(500),
         generate_memory_exhaustion(500),
         generate_combined_stress(400),
@@ -269,26 +276,68 @@ def generate_dataset() -> pd.DataFrame:
         generate_rapid_spikes(400),
         generate_gradual_degradation(400),
     ]
-
     df = pd.concat(parts, ignore_index=True)
-    # Shuffle
-    df = df.sample(frac=1, random_state=42).reset_index(drop=True)
     return df
 
+# ─────────────────────────────────────────────────────────────────
+#  Adaptive Real Logs Ingestion
+# ─────────────────────────────────────────────────────────────────
+
+def load_real_logs(log_dir="data/real_logs") -> pd.DataFrame:
+    """Read genuine crash logs from disk and adapt."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    logs_path = os.path.join(base_dir, log_dir, "*.json")
+    files = glob.glob(logs_path)
+    
+    records = []
+    for fpath in files:
+        try:
+            with open(fpath, "r") as f:
+                payload = json.load(f)
+                features_dict = payload.get("engineered_features", {})
+                
+                # Check if it has all the current features
+                if all(feat in features_dict for feat in FEATURE_NAMES):
+                    row = {feat: features_dict[feat] for feat in FEATURE_NAMES}
+                    row["crash"] = payload.get("label", 1)
+                    records.append(row)
+        except Exception as e:
+            print(f"Warning: Failed to load {fpath}: {e}")
+            
+    if not records:
+        return pd.DataFrame()
+        
+    df = pd.DataFrame(records)
+    
+    # Class Imbalance Strategy: Oversample real logs heavily
+    # Since real logs are very valuable and rare
+    dup_factor = 20
+    df = pd.concat([df] * dup_factor, ignore_index=True)
+    return df
+
+# ─────────────────────────────────────────────────────────────────
+#  Pipeline Execution
+# ─────────────────────────────────────────────────────────────────
 
 def train_and_save():
-    """Generate data, train model, evaluate, and save."""
     print("=" * 60)
-    print("  CrashSense — Model Training Pipeline")
+    print("  CrashSense — Model Training Pipeline (Adaptive)")
     print("=" * 60)
 
-    # ── Generate data ────────────────────────────────────────────
-    print("\n[1/4] Generating synthetic training data...")
-    df = generate_dataset()
-    print(f"      Total samples: {len(df)}")
+    # ── Generate & Load data ─────────────────────────────────────
+    print("\n[1/4] Preparing data (Synthetic + Real)...")
+    df_synth = generate_synthetic_dataset()
+    df_real = load_real_logs()
+    
+    df = pd.concat([df_synth, df_real], ignore_index=True) if not df_real.empty else df_synth
+    df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+    print(f"      Synthetic samples: {len(df_synth)}")
+    print(f"      Real-world samples (oversampled): {len(df_real)}")
+    print(f"      Total Training Pool: {len(df)}")
     print(f"      Healthy: {(df['crash'] == 0).sum()}")
     print(f"      Crash:   {(df['crash'] == 1).sum()}")
-    print(f"      Features: {FEATURE_NAMES}")
+    print(f"      Active Features: {len(FEATURE_NAMES)}")
 
     X = df[FEATURE_NAMES].values
     y = df["crash"].values
@@ -307,7 +356,7 @@ def train_and_save():
         max_depth=15,
         min_samples_split=5,
         min_samples_leaf=2,
-        class_weight="balanced",
+        class_weight="balanced", # Handles any remaining class imbalance
         random_state=42,
         n_jobs=-1,
     )
@@ -320,38 +369,34 @@ def train_and_save():
     print("\n      Classification Report:")
     print(classification_report(y_test, y_pred, target_names=["Healthy", "Crash"]))
 
-    # Cross-validation
-    print("      Cross-validation (5-fold):")
-    cv_scores = cross_val_score(model, X, y, cv=5, scoring="accuracy")
-    print(f"      Mean: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
-
     # Feature importances
-    print("\n      Feature Importances:")
+    print("\n      Top Feature Importances:")
     importances = model.feature_importances_
     sorted_idx = np.argsort(importances)[::-1]
-    for i in sorted_idx:
+    for i in sorted_idx[:10]:
         bar = "\u2588" * int(importances[i] * 40)
-        print(f"        {FEATURE_NAMES[i]:25s} {importances[i]:.4f}  {bar}")
+        print(f"        {FEATURE_NAMES[i]:28s} {importances[i]:.4f}  {bar}")
 
     # ── Save model ───────────────────────────────────────────────
     print("\n[4/4] Saving model...")
     model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
     os.makedirs(model_dir, exist_ok=True)
     model_path = os.path.join(model_dir, "crash_rf_model.joblib")
+    
+    # Safely overwrite
     joblib.dump({
         "model":         model,
         "feature_names": FEATURE_NAMES,
-        "version":       "1.0.0",
+        "version":       "2.0.0",
         "n_estimators":  200,
         "accuracy":      accuracy,
-        "cv_mean":       cv_scores.mean(),
     }, model_path)
+    
     print(f"      Saved to: {model_path}")
     print(f"      File size: {os.path.getsize(model_path) / 1024:.1f} KB")
     print("\n" + "=" * 60)
     print("  Training complete!")
     print("=" * 60)
-
 
 if __name__ == "__main__":
     train_and_save()

@@ -22,6 +22,7 @@ from desktop.theme import (
     BG_ROOT, BG_CARD, BG_CARD_INNER, ORANGE, RED, YELLOW, GREEN,
     TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER, FONT_FAMILY, BLUE,
 )
+from desktop.icons import get_icon
 
 _API_BASE = "http://127.0.0.1:5000"
 _REFRESH_MS = 5000
@@ -44,14 +45,15 @@ _SEV_BG = {
     "low":      "#0f1a2a",
 }
 
-# Simplified icon mapping for better compatibility
-_TYPE_ICONS = {
-    "memory_leak":       "MEM",   # Memory
-    "cpu_runaway":       "CPU",   # CPU
-    "thread_explosion":  "THR",   # Threads
-    "fd_exhaustion":     "FIL",   # Files
-    "zombie":            "ZMB",   # Zombie
-    "oom_risk":          "OOM",   # OOM
+# Map alert types to icon names in icons.py
+_TYPE_ICON_NAMES = {
+    "memory_leak":       "memory_leak",
+    "cpu_runaway":       "cpu_runaway",
+    "thread_explosion":  "thread_explosion",
+    "high_thread_count": "high_thread_count",
+    "fd_exhaustion":     "fd_exhaustion",
+    "zombie":            "zombie",
+    "oom_risk":          "oom_risk",
 }
 
 class PredictionScreen(ctk.CTkFrame):
@@ -181,26 +183,33 @@ class PredictionScreen(ctk.CTkFrame):
 
     def _fetch_data(self):
         try:
-            alerts = requests.get(f"{_API_BASE}/api/process-alerts", timeout=3).json()
-            stats = requests.get(f"{_API_BASE}/api/process-stats", timeout=3).json()
-            trend = requests.get(f"{_API_BASE}/api/process-alerts/trend", timeout=3).json()
-            
+            alerts  = requests.get(f"{_API_BASE}/api/process-alerts",       timeout=3).json()
+            stats   = requests.get(f"{_API_BASE}/api/process-stats",         timeout=3).json()
+            trend   = requests.get(f"{_API_BASE}/api/process-alerts/trend",  timeout=3).json()
+            ml_stat = requests.get(f"{_API_BASE}/api/ml-status",             timeout=3).json()
+
             if not self._destroyed:
-                self.after(0, lambda: self._update_ui(alerts, stats, trend))
+                self.after(0, lambda: self._update_ui(alerts, stats, trend, ml_stat))
         except: pass
-        
+
         if not self._destroyed:
             self.after(_REFRESH_MS, self._schedule_update)
 
-    def _update_ui(self, alerts_data, stats_data, trend_data):
+    def _update_ui(self, alerts_data, stats_data, trend_data, ml_stat=None):
         summary = alerts_data.get("summary", {})
-        score = summary.get("health_score", 100)
+        score  = summary.get("health_score", 100)
         status = summary.get("status", "healthy").upper()
-        
+
+        ml_enabled = (ml_stat or {}).get("enabled", True)
+
         # Update Gauge
         self._draw_gauge(score)
-        self._score_label.configure(text=str(int(score)), text_color=GREEN if score >= 80 else ORANGE if score >= 50 else RED)
-        self._health_status_label.configure(text=status, text_color=GREEN if score >= 80 else ORANGE if score >= 50 else RED)
+        score_color = GREEN if score >= 80 else ORANGE if score >= 50 else RED
+        self._score_label.configure(text=str(int(score)), text_color=score_color)
+        if not ml_enabled:
+            self._health_status_label.configure(text="ML DISABLED", text_color=TEXT_MUTED)
+        else:
+            self._health_status_label.configure(text=status, text_color=score_color)
         
         # Update Trend Chart
         self._ax.clear()
@@ -222,7 +231,11 @@ class PredictionScreen(ctk.CTkFrame):
         if not alerts:
             card = ctk.CTkFrame(self._alerts_container, fg_color=BG_CARD, corner_radius=12, border_width=1, border_color=BORDER)
             card.pack(fill="x", pady=5)
-            ctk.CTkLabel(card, text="✓ All processes behaving normally", font=ctk.CTkFont(size=13), text_color=GREEN).pack(pady=15)
+            row = ctk.CTkFrame(card, fg_color="transparent")
+            row.pack(pady=15)
+            _icon = get_icon("checkmark", size=28, color=GREEN)
+            ctk.CTkLabel(row, image=_icon, text="").pack(side="left")
+            ctk.CTkLabel(row, text="  All processes behaving normally", font=ctk.CTkFont(size=13), text_color=GREEN).pack(side="left")
         else:
             for alert in alerts:
                 self._create_alert_card(alert)
@@ -262,38 +275,63 @@ class PredictionScreen(ctk.CTkFrame):
                 lbl.grid(row=0, column=j, padx=8, pady=6, sticky="nsew")
 
     def _create_alert_card(self, alert):
-        sev = alert.get("severity", "low")
+        sev   = alert.get("severity", "low")
         color = _SEV_COLORS.get(sev, BLUE)
-        icon = _TYPE_ICONS.get(alert.get("type"), "!!!")
         
-        card = ctk.CTkFrame(self._alerts_container, fg_color=_SEV_BG.get(sev), corner_radius=12, border_width=1, border_color=color)
+        card = ctk.CTkFrame(self._alerts_container, fg_color=_SEV_BG.get(sev, BG_CARD),
+                            corner_radius=12, border_width=1, border_color=color)
         card.pack(fill="x", pady=4)
-        
-        inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="x", padx=15, pady=10)
-        
-        # Icon/Type box
-        type_box = ctk.CTkFrame(inner, width=45, height=35, corner_radius=6, fg_color=BG_CARD_INNER)
-        type_box.pack(side="left")
-        type_box.pack_propagate(False)
-        ctk.CTkLabel(type_box, text=icon, font=ctk.CTkFont(size=10, weight="bold"), text_color=color).pack(expand=True)
-        
-        # Details
-        txt = ctk.CTkFrame(inner, fg_color="transparent")
-        txt.pack(side="left", padx=15, fill="x", expand=True)
-        
-        title_row = ctk.CTkFrame(txt, fg_color="transparent")
-        title_row.pack(fill="x")
-        ctk.CTkLabel(title_row, text=alert['title'], font=ctk.CTkFont(size=13, weight="bold"), text_color=color).pack(side="left")
-        ctk.CTkLabel(title_row, text=f" • {alert['name']} (PID {alert['pid']})", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED).pack(side="left", padx=5)
-        
-        ctk.CTkLabel(txt, text=alert['detail'], font=ctk.CTkFont(size=11), text_color=TEXT_SECONDARY, anchor="w").pack(fill="x")
-        
-        # Right info
-        info = ctk.CTkFrame(inner, fg_color="transparent")
-        info.pack(side="right")
-        ctk.CTkLabel(info, text=alert['metric'], font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="e")
-        ctk.CTkLabel(info, text=alert.get('time_str', ''), font=ctk.CTkFont(size=10), text_color=TEXT_MUTED).pack(anchor="e")
+
+        try:
+            inner = ctk.CTkFrame(card, fg_color="transparent")
+            inner.pack(fill="x", padx=15, pady=10)
+
+            # ── Icon box ────────────────────────────────────────
+            icon_name = _TYPE_ICON_NAMES.get(alert.get("type", ""), "active_alerts")
+            icon_img  = get_icon(icon_name, size=26, color=color)
+            type_box  = ctk.CTkFrame(inner, width=46, height=46, corner_radius=10, fg_color=BG_CARD_INNER)
+            type_box.pack(side="left")
+            type_box.pack_propagate(False)
+            ctk.CTkLabel(type_box, image=icon_img, text="").pack(expand=True)
+
+            # ── Details ─────────────────────────────────────────
+            txt = ctk.CTkFrame(inner, fg_color="transparent")
+            txt.pack(side="left", padx=15, fill="x", expand=True)
+
+            title_row = ctk.CTkFrame(txt, fg_color="transparent")
+            title_row.pack(fill="x")
+
+            title  = alert.get("title",  alert.get("type", "Unknown Alert").replace("_", " ").title())
+            name   = alert.get("name",   "Unknown")
+            pid    = alert.get("pid",    "?")
+            detail = alert.get("detail", "")
+            metric = alert.get("metric", "")
+
+            ctk.CTkLabel(title_row, text=title,
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color=color).pack(side="left")
+            ctk.CTkLabel(title_row, text=f" \u2022 {name} (PID {pid})",
+                         font=ctk.CTkFont(size=11),
+                         text_color=TEXT_MUTED).pack(side="left", padx=5)
+
+            ctk.CTkLabel(txt, text=detail, font=ctk.CTkFont(size=11),
+                         text_color=TEXT_SECONDARY, anchor="w").pack(fill="x")
+
+            # ── Right metric / time ──────────────────────────────
+            info = ctk.CTkFrame(inner, fg_color="transparent")
+            info.pack(side="right")
+            ctk.CTkLabel(info, text=metric,
+                         font=ctk.CTkFont(size=11, weight="bold"),
+                         text_color=TEXT_PRIMARY).pack(anchor="e")
+            ctk.CTkLabel(info, text=alert.get("time_str", ""),
+                         font=ctk.CTkFont(size=10),
+                         text_color=TEXT_MUTED).pack(anchor="e")
+
+        except Exception as exc:
+            # Fallback: show minimal error label so the card is never blank
+            ctk.CTkLabel(card,
+                         text=f"Alert ({alert.get('type', '?')}) rendering error: {exc}",
+                         font=ctk.CTkFont(size=11), text_color=TEXT_MUTED).pack(pady=10)
 
     def _on_destroy(self, event):
         if event.widget is self:

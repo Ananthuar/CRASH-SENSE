@@ -86,12 +86,12 @@ if [[ -f "$REQ_FILE" ]]; then
     pip install --quiet --upgrade pip
     pip install --quiet -r "$REQ_FILE"
     # Install desktop-specific dependencies not in requirements.txt
-    pip install --quiet customtkinter matplotlib numpy
+    pip install --quiet customtkinter matplotlib numpy plyer pystray pillow
     info "All dependencies installed."
 else
     warn "requirements.txt not found at ${REQ_FILE}. Skipping dependency install."
     warn "Installing minimum desktop dependencies..."
-    pip install --quiet customtkinter matplotlib numpy
+    pip install --quiet customtkinter matplotlib numpy plyer pystray pillow
 fi
 
 # ── Step 4: Start the Backend Server ───────────────────────────

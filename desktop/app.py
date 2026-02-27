@@ -56,6 +56,8 @@ from desktop.screens.prediction import PredictionScreen
 from desktop.screens.settings import SettingsScreen
 from desktop.screens.profile import ProfileScreen
 from desktop import session
+from desktop.notifier import crash_warning_notifier
+from desktop.tray import SystemTrayManager
 
 
 class CrashSenseApp(ctk.CTk):
@@ -94,6 +96,12 @@ class CrashSenseApp(ctk.CTk):
         # Track which screen is currently visible
         self._current_screen_id = "dashboard"
         self._current_screen_widget = None
+        self._warning_banner = None  # In-app crash warning banner
+
+        # ── Background Daemon / System Tray ─────────────────────
+        self.protocol("WM_DELETE_WINDOW", self.hide_window)
+        self._tray = SystemTrayManager(self, icon_path)
+        self._tray.start_in_background()
 
         # ── Auth screens (created once, toggled with pack/pack_forget) ──
         self._login_screen = LoginScreen(
@@ -161,6 +169,20 @@ class CrashSenseApp(ctk.CTk):
         """
         if user:
             session.set_user(user)
+            uid = user.get("uid")
+            if uid:
+                import threading, requests
+                def _sync():
+                    try:
+                        requests.get(f"http://127.0.0.1:5000/api/users/{uid}/settings", timeout=3)
+                    except Exception:
+                        pass
+                threading.Thread(target=_sync, daemon=True).start()
+
+        # Start proactive crash warning notifier
+        crash_warning_notifier._on_alert = self._on_crash_warning
+        crash_warning_notifier.start()
+
         self._topbar.update_avatar()
         self._login_screen.pack_forget()
         self._signup_screen.pack_forget()
@@ -173,12 +195,89 @@ class CrashSenseApp(ctk.CTk):
         Clears auth session, destroys the active screen widget, and returns
         to the login screen.
         """
+        crash_warning_notifier.stop()
         session.clear_user()
         if self._current_screen_widget:
             self._current_screen_widget.destroy()
             self._current_screen_widget = None
+        if self._warning_banner:
+            try: self._warning_banner.destroy()
+            except Exception: pass
+            self._warning_banner = None
         self._main_frame.pack_forget()
         self._show_login()
+
+    def _on_crash_warning(self, alerts: list):
+        """In-app callback invoked when new crash precursors are detected."""
+        if not alerts or self._destroyed if hasattr(self, '_destroyed') else False:
+            return
+        # Pick the highest-severity alert to show in the banner
+        sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        top = sorted(alerts, key=lambda a: sev_order.get(a.get("severity", "low"), 3))[0]
+        self.after(0, lambda: self._show_warning_banner(top))
+
+    def _show_warning_banner(self, alert: dict):
+        """Show a dismissible in-app warning banner at the top of the content area."""
+        from desktop.theme import RED, ORANGE, YELLOW, BG_CARD, TEXT_PRIMARY, FONT_FAMILY
+        import customtkinter as ctk
+        # Remove existing banner first
+        if self._warning_banner:
+            try: self._warning_banner.destroy()
+            except Exception: pass
+            self._warning_banner = None
+
+        sev = alert.get("severity", "medium")
+        color = RED if sev == "critical" else ORANGE if sev == "high" else YELLOW
+        name = alert.get("name", "?")
+        pid = alert.get("pid", "?")
+        title = alert.get("title", "Crash Precursor Detected")
+        detail = alert.get("detail", "")
+
+        banner = ctk.CTkFrame(self._content_frame, fg_color=BG_CARD, corner_radius=0,
+                              border_width=2, border_color=color)
+        banner.pack(fill="x", side="top")
+        self._warning_banner = banner
+
+        inner = ctk.CTkFrame(banner, fg_color="transparent")
+        inner.pack(fill="x", padx=16, pady=8)
+
+        # Warning graphical icon
+        from desktop.icons import get_icon
+        _warn_icon = get_icon("active_alerts", size=22, color=color)
+        ctk.CTkLabel(inner, image=_warn_icon, text="").pack(side="left")
+
+        msg = ctk.CTkLabel(inner,
+                           text=f"  {title}  ·  {name} (PID {pid})  ·  {detail}",
+                           font=ctk.CTkFont(family=FONT_FAMILY, size=12),
+                           text_color=TEXT_PRIMARY, anchor="w")
+        msg.pack(side="left", fill="x", expand=True)
+
+        # Dismiss button (plain ASCII "X" — unicode ✕ renders inconsistently)
+        def _dismiss():
+            try: banner.destroy()
+            except Exception: pass
+            self._warning_banner = None
+        dismiss_btn = ctk.CTkButton(inner, text="X", width=28, height=28, corner_radius=6,
+                                    fg_color="transparent", border_width=1, border_color=color,
+                                    text_color=color, hover_color="#2a0808",
+                                    command=_dismiss,
+                                    font=ctk.CTkFont(family=FONT_FAMILY, size=11, weight="bold"))
+        dismiss_btn.pack(side="right", padx=(4, 0))
+
+        # Navigate to prediction screen button
+        def _go_prediction():
+            _dismiss()
+            self._navigate("prediction")
+            self._sidebar.set_active("prediction")
+        view_btn = ctk.CTkButton(inner, text="View Details", width=100, height=28, corner_radius=6,
+                                 fg_color=color, text_color="#000000",
+                                 hover_color=ORANGE,
+                                 command=_go_prediction,
+                                 font=ctk.CTkFont(family=FONT_FAMILY, size=11, weight="bold"))
+        view_btn.pack(side="right", padx=(0, 4))
+
+        # Auto-dismiss after 12 seconds
+        self.after(12000, lambda: _dismiss() if self._warning_banner is banner else None)
 
     # ═══════════════════════════════════════════════════════════
     #  SCREEN NAVIGATION
@@ -227,6 +326,25 @@ class CrashSenseApp(ctk.CTk):
         factory = screen_factories.get(screen_id, screen_factories["dashboard"])
         self._current_screen_widget = factory()
         self._current_screen_widget.pack(fill="both", expand=True)
+
+    # ── Window Lifecycle ─────────────────────────────────────────
+
+    def hide_window(self):
+        """Hide window (keep running in background)."""
+        self.withdraw()
+
+    def restore_window(self):
+        """Restore window from system tray."""
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def full_quit(self):
+        """Completely exit the application."""
+        crash_warning_notifier.stop()
+        self.quit()
+        self.destroy()
+        sys.exit(0)
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -601,6 +601,230 @@ def _draw_profile(size: int, color: str) -> Image.Image:
     return _finish(img, size)
 
 
+def _draw_memory_leak(size: int, color: str) -> Image.Image:
+    """Dripping memory chip — memory leak icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.06))
+    cx = s // 2
+
+    # Chip body (rounded rectangle)
+    chip_l, chip_r = int(s * 0.25), int(s * 0.75)
+    chip_t, chip_b = int(s * 0.20), int(s * 0.58)
+    draw.rounded_rectangle([chip_l, chip_t, chip_r, chip_b], radius=int(s * 0.05), outline=c, width=lw)
+
+    # Chip pins (left side)
+    for fy in [0.32, 0.42]:
+        py = int(s * fy)
+        draw.line([(chip_l - int(s * 0.10), py), (chip_l, py)], fill=c, width=lw)
+
+    # Chip pins (right side)
+    for fy in [0.32, 0.42]:
+        py = int(s * fy)
+        draw.line([(chip_r, py), (chip_r + int(s * 0.10), py)], fill=c, width=lw)
+
+    # Drip drop
+    drop_cx = cx
+    drop_top = chip_b
+    drop_bot = int(s * 0.82)
+    draw.line([(drop_cx, drop_top), (drop_cx, drop_bot - int(s * 0.06))], fill=c, width=lw)
+    drop_r = int(s * 0.07)
+    draw.ellipse([drop_cx - drop_r, drop_bot - drop_r * 2, drop_cx + drop_r, drop_bot], fill=c)
+
+    return _finish(img, size)
+
+
+def _draw_cpu_runaway(size: int, color: str) -> Image.Image:
+    """CPU chip with a flame — runaway CPU icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.06))
+
+    # CPU chip
+    chip_l, chip_r = int(s * 0.20), int(s * 0.68)
+    chip_t, chip_b = int(s * 0.42), int(s * 0.85)
+    draw.rounded_rectangle([chip_l, chip_t, chip_r, chip_b], radius=int(s * 0.04), outline=c, width=lw)
+
+    # Pins top
+    for fx in [0.33, 0.45, 0.57]:
+        px = int(s * fx)
+        draw.line([(px, chip_t - int(s * 0.08)), (px, chip_t)], fill=c, width=lw)
+
+    # Pins bottom
+    for fx in [0.33, 0.45, 0.57]:
+        px = int(s * fx)
+        draw.line([(px, chip_b), (px, chip_b + int(s * 0.08))], fill=c, width=lw)
+
+    # Flame shape on top-right
+    flame_cx = int(s * 0.75)
+    flame_pts = [
+        (flame_cx, int(s * 0.15)),
+        (flame_cx - int(s * 0.12), int(s * 0.30)),
+        (flame_cx - int(s * 0.06), int(s * 0.28)),
+        (flame_cx - int(s * 0.14), int(s * 0.42)),
+        (flame_cx + int(s * 0.12), int(s * 0.30)),
+        (flame_cx + int(s * 0.06), int(s * 0.34)),
+    ]
+    draw.polygon(flame_pts, outline=c, width=lw)
+
+    return _finish(img, size)
+
+
+def _draw_thread_explosion(size: int, color: str) -> Image.Image:
+    """Burst of lines from center — thread explosion icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.06))
+    cx, cy = s // 2, s // 2
+
+    # Central node
+    node_r = int(s * 0.07)
+    draw.ellipse([cx - node_r, cy - node_r, cx + node_r, cy + node_r], fill=c)
+
+    # Radiating lines (threads)
+    angles = [0, 45, 90, 135, 180, 225, 270, 315]
+    for angle in angles:
+        rad = math.radians(angle)
+        inner = node_r + int(s * 0.05)
+        outer = int(s * 0.38)
+        x0 = cx + int(inner * math.cos(rad))
+        y0 = cy + int(inner * math.sin(rad))
+        x1 = cx + int(outer * math.cos(rad))
+        y1 = cy + int(outer * math.sin(rad))
+        draw.line([(x0, y0), (x1, y1)], fill=c, width=lw)
+        # Small dot at tip
+        tip_r = int(s * 0.04)
+        draw.ellipse([x1 - tip_r, y1 - tip_r, x1 + tip_r, y1 + tip_r], fill=c)
+
+    return _finish(img, size)
+
+
+def _draw_fd_exhaustion(size: int, color: str) -> Image.Image:
+    """Stacked files with an X — file descriptor exhaustion icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.06))
+
+    # Stack of documents (offset layers)
+    for i, (ox, oy) in enumerate([(int(s * 0.14), int(s * 0.10)), (int(s * 0.08), int(s * 0.05)), (0, 0)]):
+        dl = int(s * 0.18) + ox
+        dr = int(s * 0.68) + ox
+        dt = int(s * 0.20) + oy
+        db = int(s * 0.68) + oy
+        draw.rounded_rectangle([dl, dt, dr, db], radius=int(s * 0.04), outline=c, width=lw)
+
+    # X mark over the top document
+    x_cx = int(s * 0.72)
+    x_cy = int(s * 0.72)
+    x_r = int(s * 0.13)
+    # Circle background
+    draw.ellipse([x_cx - x_r, x_cy - x_r, x_cx + x_r, x_cy + x_r], fill=c)
+    # White X strokes
+    xc = _hex_to_rgba("#1a1c23")  # matches BG_CARD_INNER
+    xo = int(x_r * 0.5)
+    draw.line([(x_cx - xo, x_cy - xo), (x_cx + xo, x_cy + xo)], fill=xc, width=max(2, lw))
+    draw.line([(x_cx + xo, x_cy - xo), (x_cx - xo, x_cy + xo)], fill=xc, width=max(2, lw))
+
+    return _finish(img, size)
+
+
+def _draw_zombie(size: int, color: str) -> Image.Image:
+    """Skull — zombie process icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.06))
+    cx = s // 2
+
+    # Skull dome
+    skull_l, skull_r = int(s * 0.20), int(s * 0.80)
+    skull_t, skull_b = int(s * 0.12), int(s * 0.65)
+    draw.ellipse([skull_l, skull_t, skull_r, skull_b], outline=c, width=lw)
+
+    # Jawbone
+    jaw_l, jaw_r = int(s * 0.30), int(s * 0.70)
+    jaw_t, jaw_b = int(s * 0.58), int(s * 0.80)
+    draw.rounded_rectangle([jaw_l, jaw_t, jaw_r, jaw_b], radius=int(s * 0.03), outline=c, width=lw)
+    # Teeth gaps
+    for fx in [0.43, 0.57]:
+        tx = int(s * fx)
+        draw.line([(tx, jaw_t), (tx, jaw_b)], fill=c, width=lw)
+
+    # Eyes (hollow circles)
+    eye_r = int(s * 0.08)
+    eye_y = int(s * 0.38)
+    for ex in [int(s * 0.37), int(s * 0.63)]:
+        draw.ellipse([ex - eye_r, eye_y - eye_r, ex + eye_r, eye_y + eye_r], outline=c, width=lw)
+
+    # Nose (small upside-down triangle)
+    nose_pts = [(cx - int(s * 0.05), int(s * 0.52)), (cx + int(s * 0.05), int(s * 0.52)), (cx, int(s * 0.44))]
+    draw.polygon(nose_pts, outline=c, width=lw)
+
+    return _finish(img, size)
+
+
+def _draw_oom_risk(size: int, color: str) -> Image.Image:
+    """Memory bar maxed out with warning triangle — OOM risk icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.06))
+
+    # Memory bar outline
+    bar_l, bar_r = int(s * 0.12), int(s * 0.88)
+    bar_t, bar_b = int(s * 0.55), int(s * 0.82)
+    bar_r_radius = int(s * 0.04)
+    draw.rounded_rectangle([bar_l, bar_t, bar_r, bar_b], radius=bar_r_radius, outline=c, width=lw)
+
+    # Fill (showing near-full / critical level)
+    fill_r = int((bar_r - bar_l) * 0.88) + bar_l
+    fill_l = bar_l + lw
+    fill_t = bar_t + lw
+    fill_b = bar_b - lw
+    if fill_r > fill_l and fill_b > fill_t:
+        fill_radius = max(1, bar_r_radius - lw)  # Guard against negative radius
+        draw.rounded_rectangle([fill_l, fill_t, fill_r, fill_b], radius=fill_radius, fill=c)
+
+    # RAM label slots (small squares in bar - visual texture)
+    # Warning triangle above bar
+    tri_cx = int(s * 0.50)
+    tri_top = int(s * 0.10)
+    tri_bot = int(s * 0.48)
+    tri_half = int(s * 0.28)
+    draw.polygon([
+        (tri_cx, tri_top),
+        (tri_cx + tri_half, tri_bot),
+        (tri_cx - tri_half, tri_bot),
+    ], outline=c, width=lw)
+    # Exclamation inside triangle
+    ex_cx = tri_cx
+    draw.line([(ex_cx, int(s * 0.22)), (ex_cx, int(s * 0.36))], fill=c, width=lw + 1)
+    dot_r = int(s * 0.03)
+    dot_y = int(s * 0.42)
+    draw.ellipse([ex_cx - dot_r, dot_y - dot_r, ex_cx + dot_r, dot_y + dot_r], fill=c)
+
+    return _finish(img, size)
+
+
+def _draw_checkmark(size: int, color: str) -> Image.Image:
+    """Tick mark inside a circle — all-clear / healthy status icon."""
+    img, draw, s, sc = _new_canvas(size)
+    c = _hex_to_rgba(color)
+    lw = max(2, int(s * 0.07))
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.38)
+
+    # Circle
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=c, width=lw)
+
+    # Tick (checkmark)
+    # Three points: start, corner (low), end (high-right)
+    p1 = (cx - int(r * 0.42), cy + int(r * 0.02))
+    p2 = (cx - int(r * 0.08), cy + int(r * 0.38))
+    p3 = (cx + int(r * 0.44), cy - int(r * 0.34))
+    draw.line([p1, p2, p3], fill=c, width=lw + 1, joint="curve")
+
+    return _finish(img, size)
+
+
 # ═══════════════════════════════════════════════════════════════
 #  ICON REGISTRY & PUBLIC API
 # ═══════════════════════════════════════════════════════════════
@@ -629,6 +853,15 @@ _ICON_MAP = {
     "info_circle":       _draw_info_circle,
     "dropdown_arrow":    _draw_dropdown_arrow,
     "profile":           _draw_profile,
+    # Alert-type icons for prediction screen
+    "memory_leak":       _draw_memory_leak,
+    "cpu_runaway":       _draw_cpu_runaway,
+    "thread_explosion":  _draw_thread_explosion,
+    "fd_exhaustion":     _draw_fd_exhaustion,
+    "zombie":            _draw_zombie,
+    "oom_risk":          _draw_oom_risk,
+    "checkmark":         _draw_checkmark,
+    "high_thread_count": _draw_thread_explosion,
 }
 
 # Cache to avoid regenerating the same icon multiple times

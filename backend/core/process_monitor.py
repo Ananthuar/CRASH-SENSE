@@ -436,6 +436,28 @@ class ProcessMonitor:
         with self._lock:
             return list(self._health_trend)
 
+    def get_process_history(self, pid: int) -> list[dict]:
+        """Return the snapshot history for a specific PID (for deep-dive charts)."""
+        with self._lock:
+            history = self._process_history.get(pid, [])
+            return [
+                {
+                    "timestamp":      s["timestamp"],
+                    "cpu_percent":    round(s.get("cpu_percent", 0), 2),
+                    "memory_percent": round(s.get("memory_percent", 0), 2),
+                    "rss_mb":         round(s.get("rss_mb", 0), 1),
+                    "num_threads":    s.get("num_threads", 0),
+                    "num_fds":        s.get("num_fds", 0),
+                    "status":         s.get("status_str", "?"),
+                }
+                for s in history
+            ]
+
+    def get_alerts_for_pid(self, pid: int) -> list[dict]:
+        """Return all current alerts belonging to a specific PID."""
+        with self._lock:
+            return [a for a in self._alerts if a.get("pid") == pid]
+
     # ─────────────────────────────────────────────────────────────
     #  Internal: Scan Loop
     # ─────────────────────────────────────────────────────────────
@@ -567,17 +589,22 @@ class ProcessMonitor:
     def _add_alert(self, alert: dict):
         """Add an alert, avoiding duplicates for the same (pid, type)."""
         key = (alert["pid"], alert["type"])
-        alert["timestamp"] = time.time()
+        now = time.time()
+        alert["timestamp"] = now
         alert["time_str"] = datetime.now().strftime("%H:%M:%S")
 
         with self._lock:
             if key in self._active_alert_keys:
                 # Update existing alert (refresh timestamp and detail)
+                # Preserve the original detected_at so polling stays correct
                 for i, existing in enumerate(self._alerts):
                     if (existing["pid"], existing["type"]) == key:
+                        alert["detected_at"] = existing.get("detected_at", now)
                         self._alerts[i] = alert
                         return
             else:
+                # First time seeing this alert — stamp it
+                alert["detected_at"] = now
                 self._active_alert_keys.add(key)
                 self._alerts.append(alert)
 

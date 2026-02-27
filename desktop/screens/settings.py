@@ -173,6 +173,7 @@ class SettingsScreen(ctk.CTkFrame):
             slider.pack(fill="x", pady=(4, 0))
 
     def _build_ml(self, parent, header):
+        # ── Enable/Disable toggle ──────────────────────────────────
         toggle_row = ctk.CTkFrame(parent, fg_color=BG_CARD_INNER, corner_radius=10, border_width=1, border_color=BORDER)
         toggle_row.pack(fill="x", pady=(0, 8))
         ti = ctk.CTkFrame(toggle_row, fg_color="transparent")
@@ -184,11 +185,19 @@ class SettingsScreen(ctk.CTkFrame):
         ctk.CTkLabel(txt, text="Use AI to predict potential crashes", font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_SECONDARY).pack(anchor="w")
 
         def on_ml_toggle():
-            self._settings["ml_enabled"] = bool(switch.get())
+            enabled = bool(switch.get())
+            self._settings["ml_enabled"] = enabled
             self._schedule_save()
+            # Push to backend immediately so prediction loop respects it
+            def _push():
+                try:
+                    requests.put(f"{BACKEND_BASE}/api/ml-status", json={"enabled": enabled}, timeout=3)
+                except Exception:
+                    pass
+            threading.Thread(target=_push, daemon=True).start()
 
         switch = ctk.CTkSwitch(
-            ti, text="", onvalue=1, offvalue=0, 
+            ti, text="", onvalue=1, offvalue=0,
             progress_color=ORANGE, button_color=TEXT_PRIMARY, fg_color=TEXT_MUTED,
             command=on_ml_toggle
         )
@@ -196,57 +205,137 @@ class SettingsScreen(ctk.CTkFrame):
             switch.select()
         else:
             switch.deselect()
-            
         switch.pack(side="right")
 
+        # ── Model metadata cards (loaded from backend) ─────────────
         info_row = ctk.CTkFrame(parent, fg_color="transparent")
         info_row.pack(fill="x")
         info_row.columnconfigure(0, weight=1)
         info_row.columnconfigure(1, weight=1)
+        info_row.columnconfigure(2, weight=1)
 
-        for col, (label, val) in enumerate([("Model Version", "v1.0.0"), ("Last Training", "Pending...")]):
+        # Placeholder labels updated once API returns
+        meta_labels: dict[str, ctk.CTkLabel] = {}
+        for col, (key, label, default) in enumerate([
+            ("model_version", "Model Version",  "loading…"),
+            ("accuracy",      "Accuracy",        "loading…"),
+            ("trained_at",    "Last Training",   "loading…"),
+        ]):
             box = ctk.CTkFrame(info_row, fg_color=BG_CARD_INNER, corner_radius=10, border_width=1, border_color=BORDER)
-            box.grid(row=0, column=col, padx=(0 if col == 0 else 4, 4 if col == 0 else 0), sticky="nsew")
+            col_pad = (0 if col == 0 else 4, 4 if col < 2 else 0)
+            box.grid(row=0, column=col, padx=col_pad, sticky="nsew")
             bi = ctk.CTkFrame(box, fg_color="transparent")
             bi.pack(padx=14, pady=12)
             ctk.CTkLabel(bi, text=label, font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_SECONDARY).pack(anchor="w")
-            ctk.CTkLabel(bi, text=val, font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w")
+            val_lbl = ctk.CTkLabel(bi, text=default, font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=TEXT_PRIMARY)
+            val_lbl.pack(anchor="w")
+            meta_labels[key] = val_lbl
+
+        def _fetch_ml_status():
+            try:
+                resp = requests.get(f"{BACKEND_BASE}/api/ml-status", timeout=3)
+                if resp.ok:
+                    data = resp.json()
+                    def _update():
+                        meta_labels["model_version"].configure(text=data.get("model_version", "N/A"))
+                        acc = data.get("accuracy", "N/A")
+                        meta_labels["accuracy"].configure(text=acc, text_color=GREEN if acc != "N/A" else TEXT_MUTED)
+                        meta_labels["trained_at"].configure(text=data.get("trained_at", "Unknown"))
+                        # Sync switch state with backend
+                        if data.get("enabled", True):
+                            switch.select()
+                        else:
+                            switch.deselect()
+                    self.after(0, _update)
+            except Exception:
+                def _err():
+                    for lbl in meta_labels.values():
+                        lbl.configure(text="Backend offline", text_color=TEXT_MUTED)
+                self.after(0, _err)
+
+        threading.Thread(target=_fetch_ml_status, daemon=True).start()
 
     def _build_notifications(self, parent, header):
-        notifs = [
-            ("Email Notifications",  "Receive alerts via email",       self._settings.get("notif_email", True), "notif_email"),
-            ("Slack Integration",    "Push alerts to Slack channel",   self._settings.get("notif_slack", False), "notif_slack"),
-            ("SMS Alerts",           "Critical alerts via SMS",        self._settings.get("notif_sms", False), "notif_sms"),
+        from desktop.notifier import crash_warning_notifier
+
+        # ── Desktop OS Notifications (notify-send) ────────────────
+        # ── In-App Banners ────────────────────────────────────────
+        live_notifs = [
+            ("Desktop Notifications",  "Native OS pop-up when a crash precursor is detected",
+             crash_warning_notifier.desktop_enabled,  "notif_desktop"),
+            ("In-App Banners",         "Warning banner inside CrashSense on new alerts",
+             crash_warning_notifier.inapp_enabled,    "notif_inapp"),
         ]
-        
-        for label, sub, default_on, key in notifs:
+
+        def make_live_toggle(key):
+            def _toggle(w):
+                enabled = bool(w.get())
+                self._settings[key] = enabled
+                self._schedule_save()
+                if key == "notif_desktop":
+                    crash_warning_notifier.desktop_enabled = enabled
+                elif key == "notif_inapp":
+                    crash_warning_notifier.inapp_enabled = enabled
+            return _toggle
+
+        for label, sub, default_on, key in live_notifs:
             row = ctk.CTkFrame(parent, fg_color=BG_CARD_INNER, corner_radius=10, border_width=1, border_color=BORDER)
             row.pack(fill="x", pady=4)
             ri = ctk.CTkFrame(row, fg_color="transparent")
             ri.pack(fill="x", padx=14, pady=12)
 
-            txt = ctk.CTkFrame(ri, fg_color="transparent")
-            txt.pack(side="left")
-            ctk.CTkLabel(txt, text=label, font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w")
-            ctk.CTkLabel(txt, text=sub, font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_SECONDARY).pack(anchor="w")
+            txt_f = ctk.CTkFrame(ri, fg_color="transparent")
+            txt_f.pack(side="left")
+            ctk.CTkLabel(txt_f, text=label, font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w")
+            ctk.CTkLabel(txt_f, text=sub,   font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_SECONDARY).pack(anchor="w")
 
-            def make_cmd(k=key):
-                # We need a closure to capture the specific key, but we also 
-                # need to find the specific switch widget below. We'll do a late-binding trick
-                # by passing the switch instance into the lambda.
-                pass 
-                
-            switch = ctk.CTkSwitch(ri, text="", progress_color=ORANGE, button_color=TEXT_PRIMARY, fg_color=TEXT_MUTED)
-            
-            # Late-binding the switch instance 
-            switch.configure(command=lambda w=switch, k=key: self._on_notif_toggle(k, w.get()))
-
-            if default_on:
-                switch.select()
+            sw = ctk.CTkSwitch(ri, text="", progress_color=ORANGE, button_color=TEXT_PRIMARY, fg_color=TEXT_MUTED)
+            handler = make_live_toggle(key)
+            sw.configure(command=lambda w=sw: handler(w))
+            # Initialise from persisted settings (fall back to live value)
+            saved = self._settings.get(key, default_on)
+            if saved:
+                sw.select()
             else:
-                switch.deselect()
-            switch.pack(side="right")
-            
+                sw.deselect()
+                if key == "notif_desktop":
+                    crash_warning_notifier.desktop_enabled = False
+                elif key == "notif_inapp":
+                    crash_warning_notifier.inapp_enabled = False
+            sw.pack(side="right")
+
+        # ── Separator ─────────────────────────────────────────────
+        ctk.CTkFrame(parent, height=1, fg_color=BORDER).pack(fill="x", pady=(8, 4))
+        ctk.CTkLabel(parent, text="Cloud / External Channels",
+                     font=ctk.CTkFont(family=FONT_FAMILY, size=11),
+                     text_color=TEXT_MUTED).pack(anchor="w", pady=(0, 6))
+
+        # ── External channel toggles (saved to backend) ─────────
+        ext_notifs = [
+            ("Email Notifications",  "Receive alerts via email",     self._settings.get("notif_email", True),  "notif_email"),
+            ("Slack Integration",    "Push alerts to Slack channel", self._settings.get("notif_slack", False), "notif_slack"),
+            ("SMS Alerts",           "Critical alerts via SMS",      self._settings.get("notif_sms",   False), "notif_sms"),
+        ]
+
+        for label, sub, default_on, key in ext_notifs:
+            row = ctk.CTkFrame(parent, fg_color=BG_CARD_INNER, corner_radius=10, border_width=1, border_color=BORDER)
+            row.pack(fill="x", pady=4)
+            ri = ctk.CTkFrame(row, fg_color="transparent")
+            ri.pack(fill="x", padx=14, pady=12)
+
+            txt_f = ctk.CTkFrame(ri, fg_color="transparent")
+            txt_f.pack(side="left")
+            ctk.CTkLabel(txt_f, text=label, font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w")
+            ctk.CTkLabel(txt_f, text=sub,   font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_SECONDARY).pack(anchor="w")
+
+            sw = ctk.CTkSwitch(ri, text="", progress_color=ORANGE, button_color=TEXT_PRIMARY, fg_color=TEXT_MUTED)
+            sw.configure(command=lambda w=sw, k=key: self._on_notif_toggle(k, w.get()))
+            if default_on:
+                sw.select()
+            else:
+                sw.deselect()
+            sw.pack(side="right")
+
     def _on_notif_toggle(self, key, val):
         self._settings[key] = bool(val)
         self._schedule_save()
