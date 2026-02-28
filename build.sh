@@ -17,6 +17,7 @@ fi
 # 1. Compile Backend Daemon
 echo "[Build] Compiling crashsense-daemon..."
 pyinstaller --noconfirm --clean --onefile \
+    --exclude-module PyQt5 --exclude-module PySide6 --exclude-module PyQt6 \
     --add-data "backend/models/crash_rf_model.joblib:backend/models/" \
     --name "crashsense-daemon" \
     backend/app.py
@@ -26,6 +27,7 @@ echo "[Build] Compiling CrashSense UI..."
 CTK_PATH=$(python -c "import customtkinter, os; print(os.path.dirname(customtkinter.__file__))")
 
 pyinstaller --noconfirm --clean --onefile --windowed \
+    --exclude-module PyQt5 --exclude-module PySide6 --exclude-module PyQt6 \
     --add-data "desktop/assets/icon.png:desktop/assets/" \
     --add-data "$CTK_PATH:customtkinter/" \
     --name "CrashSense" \

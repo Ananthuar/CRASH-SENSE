@@ -1,113 +1,88 @@
 
 ---
 
-# CRASH SENSE
+# 🛡️ CRASH SENSE (v1.1.0)
+### *AI-Powered Predictive Resolution Engine for Linux*
 
-**CRASH SENSE** is an AI-powered application crash detection and analysis system designed specifically for Linux environments (Arch Linux, Fedora, etc.). By leveraging machine learning and real-time system monitoring, it identifies application failures, analyzes system metrics during the crash, and provides actionable insights to help developers debug faster.
-
-## 🚀 Features
-
-* **Real-time Monitoring:** Continuously tracks system processes and resource usage using `psutil`.
-* **AI-Driven Analysis:** Uses a trained machine learning model to predict crashes based on resource usage patterns (CPU, Memory, Threads), distinguishing between normal behavior and crash precursors.
-* **Firebase Authentication:** Secure login and signup flows with email/password authentication using Firebase.
-* **Modern Desktop UI:** A clean, dark-themed dashboard built with `CustomTkinter` and `Matplotlib` for visual data tracking, including dynamic resource charts and a speedometer health gauge.
-* **Per-Process Detection:** Capable of monitoring multiple applications simultaneously, specifically detecting memory leaks, CPU runaways, thread explosions, zombie processes, and OOM risks.
-* **RESTful Backend:** A Flask-based API that acts as a bridge between the system collector and the user interface.
-
-## 📂 Project Structure
-
-```text
-CRASH-SENSE/
-├── backend/            # Flask API, ML Model, and System Monitor
-│   ├── core/           # Process monitor and crash predictor modules
-│   ├── train_model.py  # Script for training the crash prediction model
-│   ├── firebase_service.py # Firebase interaction logic
-│   └── app.py          # Main Flask backend server
-├── desktop/            # CustomTkinter GUI application
-│   ├── screens/        # Dashboard, Prediction, Login, Signup UI views
-│   ├── auth.py         # Client-side authentication handling
-│   └── app.py          # Desktop application entry point
-├── crash_sense.sh      # Shell script for automated tasks
-└── requirements.txt    # Project dependencies
-```
-
-## 🛠️ Installation
-
-### Prerequisites
-
-* **Arch Linux** (or any modern Linux distro)
-* **Python 3.11+**
-* **Tkinter system package** (Required for the GUI)
-```bash
-sudo pacman -S tk
-```
-
-### Setup Environment
-
-1. **Clone the repository:**
-```bash
-git clone https://github.com/Ananthuar/CRASH-SENSE.git
-cd CRASH-SENSE
-```
-
-2. **Create and activate a virtual environment:**
-```bash
-/usr/bin/python -m venv venv
-source venv/bin/activate
-```
-
-3. **Install dependencies:**
-```bash
-pip install -r requirements.txt
-```
-
-4. **Firebase Configuration (Required):**
-You must place your Firebase Admin SDK credentials file (`firebase-credentials.json`) in the root directory for authentication to function properly.
-
-## 🖥️ Usage
-
-### Quick Start
-You can launch both the backend server and the desktop application simultaneously using the shell script:
-```bash
-./crash_sense.sh
-```
-
-### Manual Start
-
-#### 1. Start the Backend
-Navigate to the root folder, ensure your `venv` is active, and launch the Flask server:
-```bash
-python backend/app.py
-```
-The API will be available at `http://127.0.0.1:5000`.
-
-#### 2. Launch the Desktop Dashboard
-In a new terminal (with the `venv` active):
-```bash
-python desktop/app.py
-```
-
-## 📊 API Endpoints
-
-| Endpoint | Method | Description |
-| --- | --- | --- |
-| `/api/health` | GET | Returns service status and version. |
-| `/api/process-stats` | GET | Returns metrics for all currently tracked processes. |
-| `/api/process-alerts` | GET | Returns active process crash precursors and the overall system health score. |
-
-## 🤝 Contributing
-
-This is a team project. To contribute:
-
-1. Create a new branch (`git checkout -b feature/your-feature`).
-2. Commit your changes (`git commit -m 'Add some feature'`).
-3. Push to the branch (`git push origin feature/your-feature`).
-4. Open a Pull Request.
-
-## 📜 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+**CRASH SENSE** is a next-generation, self-healing application monitoring system engineered for bare-metal Linux environments (Arch Linux, Fedora, etc.). Unlike traditional monitors that simply log failures, CrashSense utilizes a **Hybrid Edge AI Architecture** to predict application instability and neutralize threats in real-time before they escalate into system-wide crashes.
 
 ---
 
-**Developed by Ananthu A R and Team.** *Part of the Mini Project in Semester-6 under KTU 2019 Syllabus.*
+## 🚀 The Edge AI Revolution (v1.1.0)
+
+Version 1.1.0 marks the transition from a passive monitoring tool to an **Active Resolution Engine**. By moving inference to the Edge, CrashSense provides sub-millisecond response times to system anomalies.
+
+### 🧠 Automated System Resolution
+When the ML model identifies a crash precursor, the `SystemResolver` daemon triggers a tiered intervention protocol:
+
+* **Tier 1: Dynamic Throttling (`renice`)** - Automatically deprioritizes CPU-bound processes to restore system responsiveness.
+* **Tier 2: Memory Relief (`drop_caches`)** - Triggers kernel-level cache clearing when OOM (Out of Memory) conditions are predicted with >75% probability.
+* **Tier 3: Graceful Neutralization (`SIGTERM`)** - Sanitizes the environment by terminating runaway threads or leaking memory blocks before they trigger a kernel panic.
+
+### 🔔 Intelligence-Driven Notifications
+* **Context-Aware Toasts:** Fluid, color-coded animations provide non-blocking status updates for "Healthy," "At-Risk," and "Resolved" states.
+* **Native OS Bridge:** Utilizes `dbus` and `notify-send` to dispatch high-priority system alerts if the main UI is minimized or running in the system tray.
+
+---
+
+## 📂 Project Architecture & SDLC Documentation
+
+CrashSense was developed following a rigorous **Software Development Life Cycle (SDLC)**. Detailed technical blueprints are available in the `docs/` directory:
+
+| Document | Purpose |
+| :--- | :--- |
+| 📘 **[Developer Guide](./docs/Developer_Guide.pdf)** | Deep dive into the codebase, API structure, and environment scaling. |
+| 📜 **[SRS Document](./docs/SRS_CrashSense.pdf)** | Full functional/non-functional requirements and user personas. |
+| 📐 **[SDD Document](./docs/SDD_CrashSense.pdf)** | System design blueprints, module interaction diagrams, and logic flows. |
+
+
+
+---
+
+## 🔬 Machine Learning Technical Stack
+
+Our predictive engine is trained on high-dimensional system telemetry:
+
+* **Model:** Random Forest Classifier optimized for low-latency inference.
+* **Telemetry:** Real-time tracking of CPU affinity, RSS/VMS memory trends, and thread parent-child hierarchy.
+* **Backend:** Flask-based RESTful API serving as the neural bridge between the daemon and UI.
+* **Frontend:** CustomTkinter dark-themed dashboard with Matplotlib integration for real-time data visualization.
+
+---
+
+## 🛠️ Deployment & Installation
+
+CrashSense is now distributed as a **Standalone Native Linux Binary**. No Python installation or library configuration is required on the target machine.
+
+### 1. Download & Extract
+Download the latest `CrashSense-Linux-v1.1.0.tar.gz` from our [Releases](https://github.com/Ananthuar/CRASH-SENSE/releases) page.
+```bash
+tar -xzvf CrashSense-Linux-v1.1.0.tar.gz
+
+```
+
+### 2. Native Installation
+
+The automated installer handles binary placement in `/opt/crashsense`, registers the `systemd` background service, and creates an application menu shortcut.
+
+```bash
+cd dist
+sudo ./install.sh
+
+```
+
+---
+
+## 👥 Meet the Team
+
+Developed with passion by **Ananthu A R and Team**.
+
+* **Institution:** College of Engineering and Management Punnapra
+* **Academic Focus:** Semester-6 | Computer Science and Engineering
+* **Syllabus:** APJ Abdul Kalam Technological University (KTU) 2019 Scheme
+
+---
+
+**License:** Distributed under the MIT License. See `LICENSE` for more information.
+
+---
