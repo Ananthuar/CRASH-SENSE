@@ -58,6 +58,7 @@ from desktop.screens.profile import ProfileScreen
 from desktop import session
 from desktop.notifier import crash_warning_notifier
 from desktop.tray import SystemTrayManager
+from desktop.components.notification_toast import NotificationToast
 
 
 class CrashSenseApp(ctk.CTk):
@@ -87,7 +88,13 @@ class CrashSenseApp(ctk.CTk):
         self.configure(fg_color=BG_ROOT)
 
         # ── Set window icon ─────────────────────────────────────
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.png")
+        try:
+            # Frozen PyInstaller context
+            icon_path = os.path.join(sys._MEIPASS, "desktop", "assets", "icon.png")
+        except AttributeError:
+            # Source execution context
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.png")
+            
         if os.path.exists(icon_path):
             icon_img = Image.open(icon_path)
             self._icon_photo = ImageTk.PhotoImage(icon_img)
@@ -182,6 +189,9 @@ class CrashSenseApp(ctk.CTk):
         # Start proactive crash warning notifier
         crash_warning_notifier._on_alert = self._on_crash_warning
         crash_warning_notifier.start()
+        
+        # Start automated resolution event polling loop
+        self.after(5000, self._poll_resolution_events)
 
         self._topbar.update_avatar()
         self._login_screen.pack_forget()
@@ -279,7 +289,59 @@ class CrashSenseApp(ctk.CTk):
         # Auto-dismiss after 12 seconds
         self.after(12000, lambda: _dismiss() if self._warning_banner is banner else None)
 
+    def _show_resolution_toast(self, action_type: str, process_name: str, detail: str = ""):
+        """
+        Trigger a sliding Toast Notification indicating an automated system
+        resolution (Throttle, Terminate, CacheDrop) has occurred.
+        """
+        if getattr(self, "_destroyed", False):
+            return
+            
+        # Fallback to native Linux notification if window is hidden or minimized
+        if self.wm_state() in ("iconic", "withdrawn"):
+            import subprocess
+            urgency = "normal"
+            if action_type == "Terminate" or action_type == "CacheDrop":
+                urgency = "critical"
+                
+            title = "CrashSense: Threat Neutralized"
+            body = f"[{action_type}] {process_name}\n{detail}"
+            
+            try:
+                subprocess.Popen(["notify-send", title, body, "-u", urgency])
+            except Exception as e:
+                print(f"[UI] Failed to send native notification: {e}")
+            return
+            
+        toast = NotificationToast(
+            self, 
+            action_type=action_type, 
+            process_name=process_name, 
+            detail=detail
+        )
+        toast.show()
+
+    def _poll_resolution_events(self):
+        """
+        Periodically checks the backend API for new automated resolution actions
+        that occurred, triggering the Toast notification.
+        """
+        import requests
+        try:
+            # Endpoint logic placeholder: Real implementation would pull from SQLite/history
+            # For demonstration and test bounds, we safely pass if no endpoint exists yet.
+            # res = requests.get("http://127.0.0.1:5000/api/resolutions/recent", timeout=1)
+            # if res.status_code == 200:
+            #     for action in res.json().get("events", []):
+            #         self._show_resolution_toast(action["type"], action["process"], action["detail"])
+            pass
+        except Exception:
+            pass
+            
+        self.after(5000, self._poll_resolution_events)
+
     # ═══════════════════════════════════════════════════════════
+
     #  SCREEN NAVIGATION
     # ═══════════════════════════════════════════════════════════
 

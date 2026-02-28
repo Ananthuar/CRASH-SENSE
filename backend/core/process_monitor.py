@@ -43,6 +43,8 @@ from datetime import datetime
 import psutil
 import numpy as np
 
+from core.resolution import system_resolver
+
 
 # ─────────────────────────────────────────────────────────────────
 #  Configuration
@@ -607,6 +609,14 @@ class ProcessMonitor:
                 alert["detected_at"] = now
                 self._active_alert_keys.add(key)
                 self._alerts.append(alert)
+                
+                # Proactive Resolution Execution
+                if alert.get("severity") == Severity.CRITICAL:
+                    a_type = alert.get("type")
+                    if a_type == "cpu_runaway":
+                        system_resolver.throttle_process(alert["pid"], alert["name"])
+                    elif a_type in ("memory_leak", "fd_exhaustion", "oom_risk"):
+                        system_resolver.terminate_process(alert["pid"], alert["name"])
 
     def _cleanup_dead_pids(self):
         """Remove history and alerts for processes that no longer exist."""

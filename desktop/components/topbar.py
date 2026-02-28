@@ -137,7 +137,19 @@ class TopBar(ctk.CTkFrame):
         )
         logout_btn.pack(side="left", padx=4)
 
+        # Test Button for Toast Notification Animation
+        test_btn = ctk.CTkButton(
+            right,
+            text="Test Action Toast",
+            width=120, height=32, corner_radius=6,
+            fg_color="#1e1e2e", text_color=TEXT_PRIMARY, hover_color="#3b82f6",
+            command=self._debug_trigger_toast,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold")
+        )
+        test_btn.pack(side="left", padx=(0, 4))
+
         # User avatar (initials badge — dynamic from session)
+
         initials = session.get_initials()
         self._avatar_frame = ctk.CTkFrame(right, width=40, height=40, corner_radius=10,
                                           fg_color=ORANGE, cursor="hand2")
@@ -172,7 +184,22 @@ class TopBar(ctk.CTkFrame):
             # Re-pack the back button before the title frame
             self._back_btn.pack(side="left", padx=(0, 12), before=self._title.master)
 
+    def _debug_trigger_toast(self):
+        """Debug function to test the sliding UI animation."""
+        import random
+        # Must locate app instance
+        app = self.winfo_toplevel()
+        if hasattr(app, "_show_resolution_toast"):
+            actions = [
+                ("Throttle", "chrome", "CPU at 99%"),
+                ("Terminate", "memory_leak_script", "RSS grew by 50MB/min"),
+                ("CacheDrop", "system", "OOM Risk Critical")
+            ]
+            action = random.choice(actions)
+            app._show_resolution_toast(action[0], action[1], action[2])
+
     def update_avatar(self):
+
         """Refresh the avatar initials from the current session (call after login)."""
         self._avatar_label.configure(text=session.get_initials())
 

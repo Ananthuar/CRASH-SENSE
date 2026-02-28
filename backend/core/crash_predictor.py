@@ -51,6 +51,7 @@ import joblib
 
 from core.collector import system_monitor
 from core.preprocessor import data_scaler
+from core.resolution import system_resolver
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -266,10 +267,17 @@ class HybridCrashPredictor:
 
     def _load_pretrained_model(self):
         """Load the pre-trained Random Forest from disk."""
-        model_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "..", "models", "crash_rf_model.joblib"
-        )
+        import sys
+        
+        try:
+            # When frozen via PyInstaller, assets are shipped to a temp directory
+            base_path = sys._MEIPASS
+            model_path = os.path.join(base_path, "backend", "models", "crash_rf_model.joblib")
+        except AttributeError:
+            # Standard execution from source code
+            base_path = os.path.dirname(os.path.abspath(__file__))
+            model_path = os.path.join(base_path, "..", "models", "crash_rf_model.joblib")
+            
         model_path = os.path.normpath(model_path)
 
         try:
@@ -690,6 +698,16 @@ class HybridCrashPredictor:
         risk_level = self._get_risk_level(probability, now)
         risk_factors = self._analyze_risk_factors(history)
         actions = self._get_suggested_actions(risk_factors)
+
+        # Proactive Resolution Execution
+        if risk_level == "Critical":
+            # Identify if it's an OOM-level System emergency (vs just CPU which renice handles)
+            needs_cache_drop = any(
+                f["key"] in ("memory_percent", "cpu_memory", "memory_roc") 
+                for f in risk_factors
+            )
+            if needs_cache_drop:
+                system_resolver.clear_sys_cache()
 
         return {
             "crash_probability": round(probability, 4),
