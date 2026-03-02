@@ -31,6 +31,18 @@ class SignUpScreen(ctk.CTkFrame):
         )
         container.pack(fill="both", expand=True, padx=40, pady=30)
 
+        # ── Top Bar (Back Button) ───────────────────────────────
+        top_bar = ctk.CTkFrame(container, fg_color="transparent")
+        top_bar.pack(fill="x", pady=(0, 10))
+        
+        ctk.CTkButton(
+            top_bar, text="← Back to Login", width=120, height=32, corner_radius=8,
+            fg_color=theme.BG_CARD, hover_color=theme.BG_HOVER,
+            border_color=theme.BORDER, border_width=1,
+            text_color=theme.TEXT_SECONDARY, font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.switch_to_login,
+        ).pack(side="left")
+
         # Header
         ctk.CTkLabel(
             container, text="Create Account",
@@ -154,19 +166,8 @@ class SignUpScreen(ctk.CTkFrame):
         )
         self.status_label.pack(pady=(0, 10))
 
-        # ── Login link ─────────────────────────────────────────
-        login_frame = ctk.CTkFrame(container, fg_color="transparent")
-        login_frame.pack(pady=(5, 20))
-        ctk.CTkLabel(
-            login_frame, text="Already have an account?",
-            font=ctk.CTkFont(size=13), text_color=theme.TEXT_SECONDARY,
-        ).pack(side="left", padx=(0, 5))
-        ctk.CTkButton(
-            login_frame, text="Log In", width=60,
-            fg_color="transparent", hover_color=theme.BG_HOVER,
-            text_color=theme.ORANGE, font=ctk.CTkFont(size=13, weight="bold"),
-            command=self.switch_to_login,
-        ).pack(side="left")
+        # ── Back to Login Button ───────────────────────────────
+        # (Moved to top of screen)
 
         # Bind Enter key
         self.confirm_entry.bind("<Return>", lambda e: self._do_email_signup())

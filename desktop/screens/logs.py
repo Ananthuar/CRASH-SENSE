@@ -229,6 +229,9 @@ class LogsScreen(ctk.CTkFrame):
             if resp.status_code == 200 and not self._destroyed:
                 data = resp.json()
                 self.after(0, lambda: self._apply_data(data))
+        except requests.exceptions.ConnectionError:
+            if not self._destroyed:
+                self.after(0, lambda: self._updated_lbl.configure(text="Backend offline"))
         except Exception:
             pass
 

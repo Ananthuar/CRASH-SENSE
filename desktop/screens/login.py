@@ -166,10 +166,16 @@ class LoginScreen(ctk.CTkFrame):
                 self.after(0, lambda: self.on_login_success(user))
             except auth.AuthError as exc:
                 err_msg = str(exc)
-                self.after(0, lambda: self._show_error(err_msg))
-            except Exception as exc:
-                err_msg = f"Unexpected error: {exc}"
-                self.after(0, lambda: self._show_error(err_msg))
+                if "INVALID" in err_msg or "NOT_FOUND" in err_msg or "password" in err_msg.lower():
+                    clean_msg = "Invalid email or password."
+                elif "API_KEY" in err_msg or "key" in err_msg.lower():
+                    clean_msg = "Authentication service unavailable. Please check configuration."
+                else:
+                    clean_msg = err_msg
+                self.after(0, lambda m=clean_msg: self._show_error(m))
+            except Exception:
+                err_msg = "Authentication service unavailable. Please check configuration."
+                self.after(0, lambda m=err_msg: self._show_error(m))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -184,9 +190,13 @@ class LoginScreen(ctk.CTkFrame):
                 self.after(0, lambda: self.on_login_success(user))
             except auth.AuthError as exc:
                 err_msg = str(exc)
-                self.after(0, lambda: self._show_error(err_msg))
-            except Exception as exc:
-                err_msg = f"Unexpected error: {exc}"
-                self.after(0, lambda: self._show_error(err_msg))
+                if "API_KEY" in err_msg or "key" in err_msg.lower():
+                    clean_msg = "Authentication service unavailable. Please check configuration."
+                else:
+                    clean_msg = err_msg
+                self.after(0, lambda m=clean_msg: self._show_error(m))
+            except Exception:
+                err_msg = "Authentication service unavailable. Please check configuration."
+                self.after(0, lambda m=err_msg: self._show_error(m))
 
         threading.Thread(target=_run, daemon=True).start()

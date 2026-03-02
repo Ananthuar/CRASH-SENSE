@@ -198,6 +198,9 @@ class CrashDetailsScreen(ctk.CTkFrame):
                 alerts = resp.json().get("alerts", [])
                 if not self._destroyed:
                     self.after(0, lambda: self._apply_alerts(alerts))
+        except requests.exceptions.ConnectionError:
+            if not self._destroyed:
+                self.after(0, lambda: self._updated_lbl.configure(text="Backend offline"))
         except Exception:
             pass
 

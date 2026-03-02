@@ -8,16 +8,21 @@ set -e
 
 echo "[Build] Compiling CrashSense..."
 
-# Install PyInstaller if missing
-if ! command -v pyinstaller &> /dev/null; then
-    echo "[Build] Installing PyInstaller..."
-    pip install pyinstaller
+# Install PyInstaller if missing in current environment
+if ! python -c "import PyInstaller" &> /dev/null; then
+    echo "[Build] Installing PyInstaller in current environment..."
+    python -m pip install pyinstaller
 fi
 
 # 1. Compile Backend Daemon
 echo "[Build] Compiling crashsense-daemon..."
-pyinstaller --noconfirm --clean --onefile \
+python -m PyInstaller --noconfirm --clean --onefile \
     --exclude-module PyQt5 --exclude-module PySide6 --exclude-module PyQt6 \
+    --hidden-import firebase_admin \
+    --hidden-import firebase_admin.credentials \
+    --hidden-import firebase_admin.auth \
+    --hidden-import firebase_admin.firestore \
+    --add-data "backend/firebase_service_account.json:." \
     --add-data "backend/models/crash_rf_model.joblib:backend/models/" \
     --name "crashsense-daemon" \
     backend/app.py
@@ -26,10 +31,11 @@ pyinstaller --noconfirm --clean --onefile \
 echo "[Build] Compiling CrashSense UI..."
 CTK_PATH=$(python -c "import customtkinter, os; print(os.path.dirname(customtkinter.__file__))")
 
-pyinstaller --noconfirm --clean --onefile --windowed \
+python -m PyInstaller --noconfirm --clean --onefile --windowed \
     --exclude-module PyQt5 --exclude-module PySide6 --exclude-module PyQt6 \
     --hidden-import PIL._tkinter_finder \
-    --add-data "desktop/assets/icon.png:desktop/assets/" \
+    --add-data "desktop/assets:desktop/assets" \
+    --add-data ".env:." \
     --add-data "$CTK_PATH:customtkinter/" \
     --name "CrashSense" \
     desktop/app.py

@@ -190,7 +190,11 @@ class PredictionScreen(ctk.CTkFrame):
 
             if not self._destroyed:
                 self.after(0, lambda: self._update_ui(alerts, stats, trend, ml_stat))
-        except: pass
+        except requests.exceptions.ConnectionError:
+            if not self._destroyed:
+                self.after(0, lambda: self._update_ui({"summary": {"status": "backend offline", "health_score": 0}, "alerts": []}, [], []))
+        except Exception: 
+            pass
 
         if not self._destroyed:
             self.after(_REFRESH_MS, self._schedule_update)

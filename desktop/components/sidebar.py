@@ -24,7 +24,18 @@ from desktop.theme import (
 )
 from desktop.icons import get_icon
 import os
+import sys
 from PIL import Image
+
+def get_asset_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # If running as a normal python script, use the project root
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    return os.path.join(base_path, relative_path)
 
 
 class Sidebar(ctk.CTkFrame):
@@ -43,12 +54,13 @@ class Sidebar(ctk.CTkFrame):
                                     programmatic style updates.
     """
 
-    def __init__(self, master, on_navigate, on_logout, **kwargs):
+    def __init__(self, master, on_navigate, on_logout, on_quit=None, **kwargs):
         super().__init__(master, width=260, fg_color=BG_SIDEBAR, corner_radius=0, **kwargs)
         self.pack_propagate(False)   # Enforce fixed 260px width
 
         self._on_navigate = on_navigate
         self._on_logout = on_logout
+        self._on_quit = on_quit
         self._active = "dashboard"   # Default active screen
         self._buttons = {}
         self._icons = {}             # Store icon references to prevent GC
@@ -58,11 +70,7 @@ class Sidebar(ctk.CTkFrame):
         brand_frame.pack(fill="x", padx=20, pady=(24, 4))
 
         # App logo icon (loaded from assets/icon.png)
-        icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                 "desktop", "assets", "icon.png")
-        if not os.path.exists(icon_path):
-            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     "..", "assets", "icon.png")
+        icon_path = get_asset_path("desktop/assets/icon.png")
         pil_icon = Image.open(icon_path).resize((36, 36), Image.LANCZOS)
         self._brand_icon = ctk.CTkImage(light_image=pil_icon, dark_image=pil_icon, size=(36, 36))
 
@@ -111,7 +119,20 @@ class Sidebar(ctk.CTkFrame):
             text_color=TEXT_SECONDARY, height=44, corner_radius=10,
             command=self._on_logout,
         )
-        logout_btn.pack(fill="x", padx=12, pady=(0, 20))
+        logout_btn.pack(fill="x", padx=12, pady=(0, 2))
+
+        # ── Quit Application Button ──────────────────────────────
+        power_icon = get_icon("power", size=18, color="#ef4444")
+        self._icons["quit"] = power_icon
+        quit_btn = ctk.CTkButton(
+            self, text="  Quit Application", anchor="w",
+            image=power_icon, compound="left",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"),
+            fg_color="transparent", hover_color="#450a0a",
+            text_color="#ef4444", height=44, corner_radius=10,
+            command=self._on_quit,
+        )
+        quit_btn.pack(fill="x", padx=12, pady=(0, 20))
 
         # Apply initial active state
         self.set_active("dashboard")

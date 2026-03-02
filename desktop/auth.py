@@ -17,6 +17,7 @@ Public API:
 """
 
 import os
+import sys
 import threading
 import webbrowser
 import datetime
@@ -25,11 +26,17 @@ from urllib.parse import urlparse, parse_qs
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 
-# ── .env path: 2 dirname levels from desktop/auth.py → crash_sense/ ──
-_ENV_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    ".env"
-)
+def get_asset_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # If running as a normal python script, use the project root
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    return os.path.join(base_path, relative_path)
+
+_ENV_PATH = get_asset_path(".env")
 load_dotenv(_ENV_PATH)
 
 FIREBASE_WEB_API_KEY = os.getenv("FIREBASE_WEB_API_KEY", "")

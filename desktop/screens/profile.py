@@ -222,9 +222,12 @@ class ProfileScreen(ctk.CTkFrame):
                 )
                 success = resp.ok
                 error_msg = "" if success else f"Save failed: {resp.status_code}"
-            except Exception as exc:
+            except requests.exceptions.ConnectionError:
                 success = False
-                error_msg = f"Save failed: {exc}"
+                error_msg = "Save failed: Cannot connect to server."
+            except Exception:
+                success = False
+                error_msg = "Save failed: An unexpected error occurred."
 
             self.after(0, lambda: self._after_save(success, payload, error_msg))
 

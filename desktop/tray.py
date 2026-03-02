@@ -11,16 +11,27 @@ Features:
 """
 
 import sys
+import os
 import threading
 from PIL import Image
 import pystray
+
+def get_asset_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # If running as a normal python script, use the project root
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    return os.path.join(base_path, relative_path)
 
 class SystemTrayManager:
     """Manages the pystray background icon and menu lifecycle."""
     
     def __init__(self, app_instance, icon_path: str):
         self.app = app_instance
-        self.icon_path = icon_path
+        self.icon_path = get_asset_path(icon_path) if not os.path.isabs(icon_path) else icon_path
         self._icon = None
         
         # We need a PIL Image for pystray

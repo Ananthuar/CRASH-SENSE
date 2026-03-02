@@ -31,6 +31,7 @@ Usage:
 
 import sys
 import os
+import subprocess
 
 # ── Ensure the project root is on sys.path ──────────────────────
 # This allows `from backend.core.collector import SystemMonitor`
@@ -41,6 +42,16 @@ if PROJECT_ROOT not in sys.path:
 
 import customtkinter as ctk
 from PIL import Image, ImageTk
+
+def get_asset_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # If running as a normal python script, use the project root
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    return os.path.join(base_path, relative_path)
 
 # ── Internal imports ────────────────────────────────────────────
 from desktop.theme import BG_ROOT, FONT_FAMILY
@@ -88,12 +99,7 @@ class CrashSenseApp(ctk.CTk):
         self.configure(fg_color=BG_ROOT)
 
         # ── Set window icon ─────────────────────────────────────
-        try:
-            # Frozen PyInstaller context
-            icon_path = os.path.join(sys._MEIPASS, "desktop", "assets", "icon.png")
-        except AttributeError:
-            # Source execution context
-            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.png")
+        icon_path = get_asset_path("desktop/assets/icon.png")
             
         if os.path.exists(icon_path):
             icon_img = Image.open(icon_path)
@@ -110,6 +116,10 @@ class CrashSenseApp(ctk.CTk):
         self._tray = SystemTrayManager(self, icon_path)
         self._tray.start_in_background()
 
+        # ── Start Local Engine ──────────────────────────────────
+        self._daemon_process = None
+        self._start_backend_daemon()
+
         # ── Auth screens (created once, toggled with pack/pack_forget) ──
         self._login_screen = LoginScreen(
             self,
@@ -125,11 +135,11 @@ class CrashSenseApp(ctk.CTk):
         # ── Main layout container (sidebar + right panel) ───────
         self._main_frame = ctk.CTkFrame(self, fg_color=BG_ROOT, corner_radius=0)
 
-        # Left sidebar — persistent navigation
         self._sidebar = Sidebar(
             self._main_frame,
             on_navigate=self._navigate,
             on_logout=self._handle_logout,
+            on_quit=self.full_quit,
         )
         self._sidebar.pack(side="left", fill="y")
 
@@ -151,6 +161,63 @@ class CrashSenseApp(ctk.CTk):
 
         # ── Start with the login screen ─────────────────────────
         self._show_login()
+
+    # ═══════════════════════════════════════════════════════════
+    #  BACKEND DAEMON MANAGEMENT
+    # ═══════════════════════════════════════════════════════════
+
+    def _start_backend_daemon(self):
+        """
+        Locate and launch the backend daemon in the background.
+        If running as a compiled PyInstaller binary, it looks for the 
+        `crashsense-daemon` executable in the same directory.
+        If running from source, it falls back to launching `backend/app.py` directly.
+        """
+        import time
+        import urllib.request
+
+        # Check if the backend is already running (e.g. from a previous crashed run)
+        try:
+            if urllib.request.urlopen("http://127.0.0.1:5000/api/users", timeout=0.5).getcode() == 200:
+                print("Backend already running.")
+                return
+        except Exception:
+            pass
+
+        if getattr(sys, 'frozen', False):
+            # Running as compiled standalone executable
+            # The executable lives at sys.executable
+            # PyInstaller unzips assets to sys._MEIPASS, but the user executes the outer binary.
+            # We want to find the crashsense-daemon binary in the same folder as the UI binary.
+            base_dir = os.path.dirname(sys.executable)
+            daemon_path = os.path.join(base_dir, "crashsense-daemon")
+            
+            if os.path.exists(daemon_path):
+                # Suppress output on Windows/Linux by redirecting to DEVNULL
+                self._daemon_process = subprocess.Popen(
+                    [daemon_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                )
+            else:
+                print(f"Warning: Expected daemon at {daemon_path} but it was not found.")
+        else:
+            # Running from source — use current python to launch the backend
+            backend_script = os.path.join(PROJECT_ROOT, "backend", "app.py")
+            if os.path.exists(backend_script):
+                self._daemon_process = subprocess.Popen(
+                    [sys.executable, backend_script],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                )
+            else:
+                print(f"Warning: Expected backend script at {backend_script} but it was not found.")
+                
+        # Give the backend a brief moment to boot up before showing the login screen
+        if self._daemon_process:
+            time.sleep(1.5)
 
     # ═══════════════════════════════════════════════════════════
     #  AUTHENTICATION FLOW
@@ -392,8 +459,39 @@ class CrashSenseApp(ctk.CTk):
     # ── Window Lifecycle ─────────────────────────────────────────
 
     def hide_window(self):
-        """Hide window (keep running in background)."""
-        self.withdraw()
+        """Prompt to quit or hide in tray."""
+        from desktop.theme import BG_CARD, TEXT_PRIMARY, ORANGE, RED, FONT_FAMILY
+        
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Exit CrashSense")
+        dialog.geometry("400x200")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        dialog.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() - 400) // 2
+        y = self.winfo_y() + (self.winfo_height() - 200) // 2
+        dialog.geometry(f"+{x}+{y}")
+        
+        dialog.configure(fg_color=BG_CARD)
+        
+        ctk.CTkLabel(dialog, text="Close Application?", font=ctk.CTkFont(family=FONT_FAMILY, size=18, weight="bold"), text_color=TEXT_PRIMARY).pack(pady=(30, 10))
+        ctk.CTkLabel(dialog, text="Do you want to quit completely, or keep monitoring in the background?", font=ctk.CTkFont(family=FONT_FAMILY, size=13), text_color=TEXT_PRIMARY, wraplength=350).pack(pady=(0, 30))
+        
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20)
+        
+        def _bg():
+            dialog.destroy()
+            self.withdraw()
+            
+        def _quit():
+            dialog.destroy()
+            self.full_quit()
+            
+        ctk.CTkButton(btn_frame, text="Keep in Background", fg_color=ORANGE, hover_color="#c2570a", text_color="#000", command=_bg, font=ctk.CTkFont(family=FONT_FAMILY, weight="bold")).pack(side="left", expand=True, padx=10)
+        ctk.CTkButton(btn_frame, text="Quit Everything", fg_color=RED, hover_color="#991b1b", text_color="#fff", command=_quit, font=ctk.CTkFont(family=FONT_FAMILY, weight="bold")).pack(side="right", expand=True, padx=10)
 
     def restore_window(self):
         """Restore window from system tray."""
@@ -402,8 +500,16 @@ class CrashSenseApp(ctk.CTk):
         self.focus_force()
 
     def full_quit(self):
-        """Completely exit the application."""
+        """Completely exit the application and terminate the background daemon."""
         crash_warning_notifier.stop()
+        if self._daemon_process:
+            try:
+                self._daemon_process.terminate()
+                self._daemon_process.wait(timeout=2)
+            except Exception:
+                try: self._daemon_process.kill()
+                except Exception: pass
+        
         self.quit()
         self.destroy()
         sys.exit(0)
@@ -415,9 +521,33 @@ class CrashSenseApp(ctk.CTk):
 
 def main():
     """Create and run the CrashSense desktop application."""
-    app = CrashSenseApp()
-    app.mainloop()
+    # Attempt to self-register in Linux App Menus for easy portal launching
+    try:
+        from desktop.linux_integration import create_desktop_shortcut
+        create_desktop_shortcut()
+    except Exception as e:
+        print(f"[CrashSense] Non-fatal shortcut registration error: {e}")
 
+    app = CrashSenseApp()
+
+    import signal
+    def handle_signal(sig, frame):
+        print(f"\n[CrashSense] Received signal {sig}. Terminating gracefully...")
+        # Fire-and-forget daemon termination
+        if getattr(app, '_daemon_process', None):
+            try:
+                app._daemon_process.terminate()
+            except Exception:
+                pass
+        sys.exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, handle_signal)
+        signal.signal(signal.SIGTERM, handle_signal)
+    except Exception:
+        pass
+
+    app.mainloop()
 
 if __name__ == "__main__":
     main()

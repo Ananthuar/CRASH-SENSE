@@ -14,7 +14,6 @@ from desktop.theme import (
     BG_ROOT, BG_CARD, BG_CARD_INNER, ORANGE, RED, RED_BG,
     TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER, FONT_FAMILY, GREEN
 )
-from desktop.data import USERS
 from desktop.icons import get_icon
 from desktop import session
 
@@ -77,6 +76,9 @@ class SettingsScreen(ctk.CTkFrame):
     def _build_sections(self):
         scroll = self._scroll
         
+        # Section 0: My Profile
+        self._section(scroll, "profile", "My Profile", "Your currently logged in account details", self._build_profile)
+
         # Section 1: Alert Thresholds
         self._section(scroll, "thresholds", "Alert Thresholds", "Configure system monitoring thresholds", self._build_thresholds)
 
@@ -136,6 +138,48 @@ class SettingsScreen(ctk.CTkFrame):
         content = ctk.CTkFrame(card, fg_color="transparent")
         content.pack(fill="x", padx=20, pady=(0, 16))
         builder(content, header)
+
+    def _build_profile(self, parent, header):
+        row = ctk.CTkFrame(parent, fg_color=BG_CARD_INNER, corner_radius=10, border_width=1, border_color=BORDER)
+        row.pack(fill="x", pady=4)
+        ri = ctk.CTkFrame(row, fg_color="transparent")
+        ri.pack(fill="x", padx=14, pady=10)
+
+        # Basic placeholder based on local session email until fetch
+        raw_email = self._user.get("email", "User")
+        initials = raw_email[0].upper() if raw_email else "U"
+        
+        av = ctk.CTkFrame(ri, width=38, height=38, corner_radius=19, fg_color=ORANGE)
+        av.pack(side="left")
+        av.pack_propagate(False)
+        ctk.CTkLabel(av, text=initials, font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"), text_color="#ffffff").pack(expand=True)
+
+        txt = ctk.CTkFrame(ri, fg_color="transparent")
+        txt.pack(side="left", padx=(10, 0))
+        
+        name_lbl = ctk.CTkLabel(txt, text="Loading Firebase Profile...", font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=TEXT_PRIMARY)
+        name_lbl.pack(anchor="w")
+        email_lbl = ctk.CTkLabel(txt, text=raw_email, font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_SECONDARY)
+        email_lbl.pack(anchor="w")
+
+        role_lbl = ctk.CTkLabel(ri, text=" Fetching... ", font=ctk.CTkFont(family=FONT_FAMILY, size=10, weight="bold"), text_color=ORANGE, fg_color="#2a1a08", corner_radius=10)
+        role_lbl.pack(side="right")
+
+        def _fetch_profile():
+            uid = self._user.get("uid")
+            if not uid: return
+            try:
+                resp = requests.get(f"{BACKEND_BASE}/api/users/{uid}/profile", timeout=3)
+                if resp.ok:
+                    data = resp.json()
+                    def _update():
+                        name_lbl.configure(text=data.get("display_name", data.get("email", "Unknown User")))
+                        role_lbl.configure(text=f" {data.get('role', 'User')} ")
+                    self.after(0, _update)
+            except Exception:
+                self.after(0, lambda: name_lbl.configure(text="Offline (No Data)"))
+
+        threading.Thread(target=_fetch_profile, daemon=True).start()
 
     def _build_thresholds(self, parent, header):
         thresholds = [
@@ -369,8 +413,8 @@ class SettingsScreen(ctk.CTkFrame):
             command=on_add_user
         ).pack(side="right")
 
-        # Try to fetch live users from Firestore via backend; fall back to static data
-        users = USERS  # fallback
+        # Try to fetch live users from Firestore via backend
+        users = []
         try:
             resp = requests.get(f"{BACKEND_BASE}/api/users", timeout=3)
             if resp.ok:
@@ -386,7 +430,11 @@ class SettingsScreen(ctk.CTkFrame):
                         for u in remote
                     ]
         except Exception:
-            pass  # backend offline — use local fallback
+            pass  # backend offline
+
+        if not users:
+            ctk.CTkLabel(parent, text="No users found or backend offline.", font=ctk.CTkFont(family=FONT_FAMILY, size=12), text_color=TEXT_MUTED).pack(pady=20)
+            return
 
         for user in users:
             row = ctk.CTkFrame(parent, fg_color=BG_CARD_INNER, corner_radius=10, border_width=1, border_color=BORDER)
