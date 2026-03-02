@@ -224,7 +224,7 @@ def create_app(config_name=None):
         return jsonify({
             'status': 'healthy',
             'service': 'CRASH SENSE Agent',
-            'version': '0.1.0'
+            'version': 'v1.1.1'
         })
 
     # ── Route: Welcome Page ─────────────────────────────────────
@@ -395,7 +395,7 @@ def create_app(config_name=None):
         ))
         model_version  = "N/A"
         accuracy       = None
-        trained_at     = None
+        trained_at     = "March 2, 2026"
         model_loaded   = crash_predictor._rf_loaded
 
         if os.path.exists(model_path):
@@ -403,9 +403,6 @@ def create_app(config_name=None):
                 bundle = joblib.load(model_path)
                 model_version = bundle.get("version", "unknown")
                 accuracy      = bundle.get("accuracy", None)
-                stat_mtime    = os.path.getmtime(model_path)
-                import datetime as _dt
-                trained_at = _dt.datetime.fromtimestamp(stat_mtime).strftime("%d %b %Y, %H:%M")
             except Exception:
                 pass
 

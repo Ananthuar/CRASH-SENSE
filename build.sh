@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # CrashSense Standalone Binary Compilation Script
 # Compiles the Python source into standalone ELF binaries using PyInstaller
@@ -28,6 +28,7 @@ CTK_PATH=$(python -c "import customtkinter, os; print(os.path.dirname(customtkin
 
 pyinstaller --noconfirm --clean --onefile --windowed \
     --exclude-module PyQt5 --exclude-module PySide6 --exclude-module PyQt6 \
+    --hidden-import PIL._tkinter_finder \
     --add-data "desktop/assets/icon.png:desktop/assets/" \
     --add-data "$CTK_PATH:customtkinter/" \
     --name "CrashSense" \
@@ -39,7 +40,7 @@ echo "[Build] Standalone binaries compiled to dist/"
 echo "[Build] Generating install.sh payload..."
 
 cat << 'EOF' > dist/install.sh
-#!/bin/bash
+#!/usr/bin/env bash
 
 # CrashSense Single-Click Target VM Installer
 # Must be run as root

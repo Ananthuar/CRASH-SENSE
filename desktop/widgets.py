@@ -99,7 +99,7 @@ class StatusBar(ctk.CTkFrame):
     Bottom status bar with a colored health dot, uptime counter, and version label.
     """
 
-    def __init__(self, master, version: str = "0.1.0", **kwargs):
+    def __init__(self, master, version: str = "1.1.1", **kwargs):
         super().__init__(
             master,
             height=36,

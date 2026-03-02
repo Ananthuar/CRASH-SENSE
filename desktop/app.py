@@ -297,29 +297,29 @@ class CrashSenseApp(ctk.CTk):
         if getattr(self, "_destroyed", False):
             return
             
-        # Fallback to native Linux notification if window is hidden or minimized
-        if self.wm_state() in ("iconic", "withdrawn"):
-            import subprocess
-            urgency = "normal"
-            if action_type == "Terminate" or action_type == "CacheDrop":
-                urgency = "critical"
-                
-            title = "CrashSense: Threat Neutralized"
-            body = f"[{action_type}] {process_name}\n{detail}"
-            
+        import subprocess
+        import threading
+        
+        urgency = "critical" if action_type in ("Terminate", "CacheDrop", "critical") else "normal"
+        title = "CrashSense: Threat Neutralized"
+        body = f"[{action_type}] {process_name}\n{detail}"
+        
+        def _notify():
             try:
-                subprocess.Popen(["notify-send", title, body, "-u", urgency])
+                subprocess.run(["notify-send", "-a", "CrashSense", "-u", urgency, title, body], check=False)
             except Exception as e:
                 print(f"[UI] Failed to send native notification: {e}")
-            return
+                
+        threading.Thread(target=_notify, daemon=True).start()
             
-        toast = NotificationToast(
-            self, 
-            action_type=action_type, 
-            process_name=process_name, 
-            detail=detail
-        )
-        toast.show()
+        if self.wm_state() not in ("iconic", "withdrawn"):
+            toast = NotificationToast(
+                self, 
+                action_type=action_type, 
+                process_name=process_name, 
+                detail=detail
+            )
+            toast.show()
 
     def _poll_resolution_events(self):
         """
