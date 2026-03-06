@@ -142,14 +142,11 @@ class CrashWarningNotifier:
 
         title = f"CrashSense [{sev_label}]: {type_label}"
         body  = f"{name} (PID {pid})\n{detail}\n{metric}".strip()
+        urgency = "critical" if sev in ("critical", "high") else "normal"
 
         try:
-            notification.notify(
-                title=title,
-                message=body,
-                app_name="CrashSense",
-                timeout=8,
-            )
+            import subprocess
+            subprocess.run(["notify-send", "-a", "CrashSense", "-u", urgency, title, body], check=False)
         except Exception:
             pass
 

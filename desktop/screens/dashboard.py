@@ -8,7 +8,9 @@ Real-time statistics update every 3 seconds.
 """
 
 import customtkinter as ctk
+import customtkinter as ctk
 from datetime import datetime
+import requests
 import matplotlib
 matplotlib.use("Agg")
 from matplotlib.figure import Figure
@@ -176,6 +178,9 @@ class DashboardScreen(ctk.CTkFrame):
         canvas.get_tk_widget().pack(fill="x", padx=12, pady=(4, 12))
         canvas.draw()
 
+        if not hasattr(self, '_trend_chart'):
+            self._trend_chart = (fig, ax, canvas, color)
+
     def _make_resource_chart(self, parent, col, title, data, color, current_val):
         card = ctk.CTkFrame(parent, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
         card.grid(row=0, column=col, padx=6, sticky="nsew")
@@ -248,6 +253,35 @@ class DashboardScreen(ctk.CTkFrame):
             ]
             for i, lbl in enumerate(self._metric_sub_labels):
                 lbl.configure(text=sub_texts[i])
+
+            # Update Crash Trend Chart with live data
+            try:
+                resp = requests.get("http://127.0.0.1:5000/api/process-alerts/trend", timeout=2)
+                if resp.status_code == 200:
+                    trend_data = resp.json()
+                    if trend_data and hasattr(self, '_trend_chart'):
+                        fig, ax, canvas, color = self._trend_chart
+                        ax.clear()
+                        ax.set_facecolor(BG_CARD)
+                        
+                        # Plot the number of active alerts representing "Crashes"
+                        vals = [d.get("alerts", 0) for d in trend_data[-30:]]  # last 30 data points
+                        x = list(range(len(vals)))
+                        
+                        ax.plot(x, vals, color=color, linewidth=2, marker="o" if len(vals) < 20 else None, markersize=5, markerfacecolor=color)
+                        ax.fill_between(x, vals, alpha=0.1, color=color)
+                        
+                        ax.set_ylabel("Active Alerts", color=TEXT_MUTED, fontsize=9)
+                        ax.tick_params(colors=TEXT_MUTED, labelsize=8)
+                        ax.set_xticks([])  # Hide x-axis ticks
+                        
+                        for spine in ax.spines.values():
+                            spine.set_color(BORDER)
+                        ax.grid(True, color="#1e1e2a", linewidth=0.5, alpha=0.5)
+                        fig.tight_layout(pad=1.5)
+                        canvas.draw_idle()
+            except Exception as e:
+                pass  # Ignore network errors on dashboard refresh
 
             # Update resource current values and charts
             chart_values = [metrics["cpu_percent"], metrics["memory_percent"]]

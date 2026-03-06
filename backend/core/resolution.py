@@ -96,6 +96,80 @@ class SystemResolver:
         ).start()
 
     # ─────────────────────────────────────────────────────────────
+    #  FR-07: Permission-Gated Remediation Executor
+    # ─────────────────────────────────────────────────────────────
+
+    def execute_remediation(self, action_name: str,
+                             permission_granted: bool,
+                             pid: int = None,
+                             process_name: str = None) -> dict:
+        """
+        FR-07: Execute a named remediation action only when permission_granted=True.
+
+        If permission_granted is False, logs "User Denied" and returns immediately
+        without executing any OS-level action.
+
+        Args:
+            action_name:        One of: 'clear_cache', 'restart_service',
+                                'kill_process', 'throttle_process',
+                                'rotate_logs', 'noop'
+            permission_granted: Boolean user response from the UI prompt.
+            pid:                Optional process ID for process-level actions.
+            process_name:       Optional process name for logging.
+
+        Returns:
+            dict with keys: action, permission_granted, executed (bool), message
+        """
+        if not permission_granted:
+            msg = f"[Resolver] User Denied remediation action '{action_name}'"
+            print(msg)
+            _post_action_validator.record_denial(action_name)
+            return {
+                "action": action_name,
+                "permission_granted": False,
+                "executed": False,
+                "message": "User Denied",
+            }
+
+        # Permission granted — execute the action
+        print(f"[Resolver] User Approved: executing '{action_name}' "
+              f"(pid={pid}, name={process_name})")
+
+        result_msg = "Action dispatched."
+        try:
+            if action_name == "clear_cache":
+                self.clear_sys_cache()
+                result_msg = "Cache drop initiated."
+            elif action_name == "kill_process" and pid is not None:
+                self.terminate_process(pid, process_name or str(pid))
+                result_msg = f"SIGTERM sent to PID {pid}."
+            elif action_name == "throttle_process" and pid is not None:
+                self.throttle_process(pid, process_name or str(pid))
+                result_msg = f"Throttled PID {pid} to nice 19."
+            elif action_name == "restart_service":
+                # Placeholder — real impl would call systemctl or supervisord
+                print(f"[Resolver] Restart service action triggered.")
+                result_msg = "Service restart requested."
+            elif action_name == "rotate_logs":
+                print("[Resolver] Log rotation action triggered.")
+                result_msg = "Log rotation requested."
+            else:
+                result_msg = f"Action '{action_name}' acknowledged (no-op or unknown)."
+        except Exception as e:
+            result_msg = f"Action '{action_name}' failed: {e}"
+            print(f"[Resolver] Error: {result_msg}")
+
+        # Start post-action validation (FR-08)
+        _post_action_validator.start_validation(action_name, pid)
+
+        return {
+            "action": action_name,
+            "permission_granted": True,
+            "executed": True,
+            "message": result_msg,
+        }
+
+    # ─────────────────────────────────────────────────────────────
     #  Executors (Run in Background Threads)
     # ─────────────────────────────────────────────────────────────
 
@@ -160,5 +234,145 @@ class SystemResolver:
         except Exception as e:
             print(f"[Resolver] [-] Cache drop error: {e}")
 
-# Module-level singleton
-system_resolver = SystemResolver()
+
+# ─────────────────────────────────────────────────────────────────
+#  FR-08: Post-Action Health Validator
+# ─────────────────────────────────────────────────────────────────
+
+class PostActionValidator:
+    """
+    FR-08: Monitors system health after a remediation action and determines
+    whether the application stabilized.
+
+    Polls CPU usage every POLL_INTERVAL seconds for up to VALIDATION_WINDOW
+    seconds. Reports stabilization if CPU stays below CPU_STABLE_THRESHOLD
+    for the majority of the window.
+
+    Constants:
+        VALIDATION_WINDOW: 120 seconds (2 minutes)
+        CPU_STABLE_THRESHOLD: 50%
+        POLL_INTERVAL: 10 seconds
+    """
+
+    VALIDATION_WINDOW    = 120   # seconds
+    CPU_STABLE_THRESHOLD = 50.0  # percent
+    POLL_INTERVAL        = 10    # seconds
+
+    def __init__(self):
+        self._lock   = threading.Lock()
+        self._status = {
+            "active":       False,
+            "action":       None,
+            "pid":          None,
+            "started_at":   None,
+            "stabilized":   None,   # True / False / None (in-progress)
+            "cpu_samples":  [],
+            "result_msg":   "No validation run yet.",
+            "denied_actions": [],
+        }
+
+    def record_denial(self, action_name: str):
+        """Record a user-denied action for audit purposes."""
+        with self._lock:
+            self._status["denied_actions"].append({
+                "action":    action_name,
+                "timestamp": time.time(),
+            })
+
+    def start_validation(self, action_name: str, pid: int = None):
+        """
+        Begin a background validation poll after a remediation action.
+
+        Args:
+            action_name: The remediation action that was executed.
+            pid:         Optional PID of the affected process.
+        """
+        with self._lock:
+            self._status.update({
+                "active":      True,
+                "action":      action_name,
+                "pid":         pid,
+                "started_at":  time.time(),
+                "stabilized":  None,
+                "cpu_samples": [],
+                "result_msg":  "Validation in progress...",
+            })
+
+        threading.Thread(
+            target=self._poll_health,
+            daemon=True
+        ).start()
+
+    def _poll_health(self):
+        """Background thread: poll CPU until window expires or stabilization confirmed."""
+        start = time.time()
+        samples = []
+
+        while time.time() - start < self.VALIDATION_WINDOW:
+            try:
+                cpu = psutil.cpu_percent(interval=1)
+                samples.append(cpu)
+
+                with self._lock:
+                    self._status["cpu_samples"] = list(samples)
+
+                    # Early exit if system is clearly stabilized (5+ samples all < threshold)
+                    if len(samples) >= 5 and all(s < self.CPU_STABLE_THRESHOLD for s in samples[-5:]):
+                        self._status["stabilized"] = True
+                        self._status["active"]     = False
+                        elapsed = round(time.time() - start, 1)
+                        self._status["result_msg"] = (
+                            f"✅ System stabilized after {elapsed}s. "
+                            f"CPU stayed below {self.CPU_STABLE_THRESHOLD}%."
+                        )
+                        print(f"[PostValidator] {self._status['result_msg']}")
+                        return
+
+            except Exception:
+                pass
+
+            time.sleep(self.POLL_INTERVAL - 1)  # subtract interval=1 used above
+
+        # Window expired — evaluate final samples
+        with self._lock:
+            if not samples:
+                self._status["stabilized"] = None
+                self._status["result_msg"] = "Validation complete (no CPU samples collected)."
+            else:
+                below = sum(1 for s in samples if s < self.CPU_STABLE_THRESHOLD)
+                ratio = below / len(samples)
+                self._status["stabilized"] = ratio >= 0.7
+                avg_cpu = sum(samples) / len(samples)
+                if self._status["stabilized"]:
+                    self._status["result_msg"] = (
+                        f"✅ System stabilized. Avg CPU={avg_cpu:.1f}% over "
+                        f"{self.VALIDATION_WINDOW}s window."
+                    )
+                else:
+                    self._status["result_msg"] = (
+                        f"⚠️ System NOT fully stabilized. Avg CPU={avg_cpu:.1f}% "
+                        f"({below}/{len(samples)} samples below {self.CPU_STABLE_THRESHOLD}%)."
+                    )
+            self._status["active"] = False
+            print(f"[PostValidator] {self._status['result_msg']}")
+
+    def get_status(self) -> dict:
+        """
+        Return current validation state.
+
+        Returns:
+            dict with keys: active, action, started_at, stabilized,
+                            result_msg, cpu_samples, denied_actions
+        """
+        with self._lock:
+            return dict(self._status)
+
+
+# Module-level singletons
+system_resolver       = SystemResolver()
+_post_action_validator = PostActionValidator()
+
+
+def get_post_action_validator() -> PostActionValidator:
+    """Return the module-level PostActionValidator instance."""
+    return _post_action_validator

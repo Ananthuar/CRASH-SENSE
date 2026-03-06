@@ -95,16 +95,29 @@ class Sidebar(ctk.CTkFrame):
         ctk.CTkFrame(self, height=1, fg_color=BORDER).pack(fill="x", padx=16, pady=(20, 12))
 
         # ── Navigation Items ────────────────────────────────────
-        nav_frame = ctk.CTkFrame(self, fg_color="transparent")
-        nav_frame.pack(fill="x", padx=12)
+        nav_scroll = ctk.CTkScrollableFrame(
+            self, fg_color="transparent",
+            scrollbar_button_color="#1e2028",
+            scrollbar_button_hover_color="#2a2c36"
+        )
+        nav_scroll.pack(fill="both", expand=True, padx=4)
+
+        nav_frame = ctk.CTkFrame(nav_scroll, fg_color="transparent")
+        nav_frame.pack(fill="x", padx=4)
 
         for item in NAV_ITEMS:
             btn = self._make_nav_button(nav_frame, item)
             self._buttons[item["id"]] = btn
 
-        # ── Spacer (pushes logout to bottom) ────────────────────
-        spacer = ctk.CTkFrame(self, fg_color="transparent")
-        spacer.pack(fill="both", expand=True)
+        # Bind mouse wheel for scrolling within the sidebar
+        def _scroll_up(e):
+            try: nav_scroll._parent_canvas.yview_scroll(-3, "units")
+            except Exception: pass
+        def _scroll_down(e):
+            try: nav_scroll._parent_canvas.yview_scroll(3, "units")
+            except Exception: pass
+        nav_scroll.bind_all("<Button-4>", _scroll_up)
+        nav_scroll.bind_all("<Button-5>", _scroll_down)
 
         # ── Logout Button (bottom) ──────────────────────────────
         ctk.CTkFrame(self, height=1, fg_color=BORDER).pack(fill="x", padx=16, pady=(0, 8))

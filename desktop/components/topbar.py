@@ -57,13 +57,14 @@ class TopBar(ctk.CTkFrame):
         "profile":       "My Profile",
     }
 
-    def __init__(self, master, on_logout, on_back=None, on_profile=None, **kwargs):
+    def __init__(self, master, on_logout, on_back=None, on_profile=None, on_alerts=None, **kwargs):
         super().__init__(master, height=72, fg_color=BG_TOPBAR, corner_radius=0, **kwargs)
         self.pack_propagate(False)    # Enforce fixed 72px height
 
         self._on_logout = on_logout
         self._on_back = on_back
         self._on_profile = on_profile
+        self._on_alerts = on_alerts
 
         # Keep icon references to prevent garbage collection
         self._icons = {}
@@ -122,6 +123,7 @@ class TopBar(ctk.CTkFrame):
             image=bell_icon,
             fg_color="#1a1c24", hover_color="#2a2c36",
             text_color=TEXT_SECONDARY,
+            command=self._handle_alerts,
         )
         notif_btn.pack(side="left", padx=4)
 
@@ -193,3 +195,8 @@ class TopBar(ctk.CTkFrame):
         """Navigate to the profile screen."""
         if self._on_profile:
             self._on_profile()
+
+    def _handle_alerts(self):
+        """Navigate to the alerts screen."""
+        if self._on_alerts:
+            self._on_alerts()

@@ -42,6 +42,8 @@ from core.collector import system_monitor
 from core.preprocessor import data_scaler
 from core.crash_predictor import crash_predictor
 from core.process_monitor import process_monitor
+from core.crash_signatures import crash_sig_db
+from core.resolution import system_resolver, get_post_action_validator
 import firebase_service
 from auth_html import GOOGLE_AUTH_HTML, PHONE_AUTH_HTML, EMAIL_LINK_AUTH_HTML
 
@@ -199,10 +201,21 @@ def create_app(config_name=None):
     # ── Route: List All Users ────────────────────────────────────
     @app.route('/api/users', methods=['GET'])
     def list_users():
-        """Return all user profiles from Firestore."""
+        """Return user profiles from Firestore, isolated by the requester's email domain."""
         try:
-            users = firebase_service.list_all_users()
-            return jsonify(users)
+            from flask import request
+            requester_email = request.args.get('email', '')
+            if not requester_email or '@' not in requester_email:
+                return jsonify({"error": "Missing or invalid email parameter. Tenant isolation requires requester email."}), 400
+                
+            domain = requester_email.split('@')[1].lower()
+            all_users = firebase_service.list_all_users()
+            
+            filtered_users = [
+                u for u in all_users 
+                if u.get('email') and '@' in u['email'] and u['email'].split('@')[1].lower() == domain
+            ]
+            return jsonify(filtered_users)
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
 
@@ -224,7 +237,7 @@ def create_app(config_name=None):
         return jsonify({
             'status': 'healthy',
             'service': 'CRASH SENSE Agent',
-            'version': 'v1.1.1'
+            'version': 'v1.1.3'
         })
 
     # ── Route: Welcome Page ─────────────────────────────────────
@@ -313,77 +326,51 @@ def create_app(config_name=None):
 
     @app.route('/api/logs', methods=['GET'])
     def get_logs():
-        """Return structured log entries derived from live process-monitor data.
+        """Retrieve recent logs from Firestore."""
+        uid = request.args.get('uid')
+        if not uid:
+            return jsonify({"error": "Missing uid parameter"}), 400
 
-        Each entry matches the schema:
-            { time, level, module, type, msg }
-
-        Sources:
-          1. Active alerts  → ERROR / WARN entries per alert
-          2. Health trend   → INFO entries showing score transitions
-        """
-        import time as _time
-        from datetime import datetime as _dt
-
-        entries = []
-
-        # ── Source 1: active alerts ─────────────────────────────────
-        _sev_level = {"critical": "ERROR", "high": "ERROR",
-                      "medium": "WARN",  "low": "INFO"}
-        for alert in process_monitor.get_alerts():
-            ts  = alert.get("timestamp", _time.time())
-            entries.append({
-                "time":   _dt.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
-                "level":  _sev_level.get(alert.get("severity", "low"), "INFO"),
-                "module": alert.get("name", "Unknown")[:20],
-                "type":   alert.get("type", "").replace("_", " ").title(),
-                "msg":    alert.get("detail", alert.get("title", "")),
-                "pid":    alert.get("pid"),
-                "severity": alert.get("severity", "low"),
+        limit_str = request.args.get('limit', '50')
+        limit = int(limit_str) if limit_str.isdigit() else 50
+        
+        try:
+            from firebase_service import get_logs as fs_get_logs
+            entries = fs_get_logs(uid=uid, limit=limit)
+            
+            error_count = sum(1 for e in entries if e.get("level") == "ERROR")
+            warn_count  = sum(1 for e in entries if e.get("level") == "WARN")
+            from collections import Counter
+            mod_counts = Counter(e.get("module") for e in entries if e.get("level") == "ERROR")
+            top_module = mod_counts.most_common(1)[0] if mod_counts else ("None", 0)
+            
+            return jsonify({
+                "entries":          entries,
+                "total":            len(entries),
+                "error_count":      error_count,
+                "warn_count":       warn_count,
+                "top_module":       top_module[0],
+                "top_module_count": top_module[1]
+            })
+        except Exception as e:
+            return jsonify({
+                "entries": [],
+                "total": 0,
+                "error_count": 0,
+                "warn_count": 0,
+                "top_module": "None",
+                "top_module_count": 0
             })
 
-        # ── Source 2: health trend snapshots (INFO / WARN) ──────────
-        for snap in process_monitor.get_health_trend():
-            score = snap.get("health_score", 100)
-            ts    = snap.get("timestamp", _time.time())
-            if score < 50:
-                level = "WARN"
-                msg   = f"System health degraded: score={score}"
-            elif score < 80:
-                level = "INFO"
-                msg   = f"System health warning: score={score}"
-            else:
-                level = "INFO"
-                msg   = f"System health nominal: score={score}"
-            entries.append({
-                "time":   _dt.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
-                "level":  level,
-                "module": "ProcessMonitor",
-                "type":   "Health Check",
-                "msg":    msg,
-                "pid":    None,
-                "severity": "low" if score >= 80 else "medium" if score >= 50 else "high",
-            })
-
-        # Sort newest first
-        entries.sort(key=lambda e: e["time"], reverse=True)
-
-        # Compute analytics
-        error_count = sum(1 for e in entries if e["level"] == "ERROR")
-        warn_count  = sum(1 for e in entries if e["level"] == "WARN")
-        # Most affected module
-        from collections import Counter
-        mod_counts = Counter(e["module"] for e in entries if e["level"] == "ERROR")
-        top_module = mod_counts.most_common(1)[0] if mod_counts else ("None", 0)
-
-        return jsonify({
-            "entries":          entries,
-            "total":            len(entries),
-            "error_count":      error_count,
-            "warn_count":       warn_count,
-            "top_module":       top_module[0],
-            "top_module_count": top_module[1],
-        })
+    @app.route('/api/session', methods=['POST'])
+    def sync_session():
+        """Syncs the current desktop session's active UID with the backend process monitor."""
+        data = request.get_json(silent=True) or {}
+        uid = data.get('uid')
+        if uid:
+            process_monitor.active_uid = uid
+            return jsonify({"status": "ok"}), 200
+        return jsonify({"error": "missing uid"}), 400
 
     @app.route('/api/ml-status', methods=['GET'])
     def get_ml_status():
@@ -393,7 +380,7 @@ def create_app(config_name=None):
             os.path.dirname(os.path.abspath(__file__)),
             "models", "crash_rf_model.joblib"
         ))
-        model_version  = "N/A"
+        model_version  = "1.1.0"
         accuracy       = None
         trained_at     = "March 2, 2026"
         model_loaded   = crash_predictor._rf_loaded
@@ -401,7 +388,7 @@ def create_app(config_name=None):
         if os.path.exists(model_path):
             try:
                 bundle = joblib.load(model_path)
-                model_version = bundle.get("version", "unknown")
+                model_version = bundle.get("version", "1.1.0")
                 accuracy      = bundle.get("accuracy", None)
             except Exception:
                 pass
@@ -422,6 +409,141 @@ def create_app(config_name=None):
         crash_predictor._ml_enabled = enabled
         return jsonify({"enabled": enabled})
 
+    # ── Route: Crash Signatures DB (FR-05) ──────────────────────
+    @app.route('/api/signatures', methods=['GET'])
+    def get_signatures():
+        """
+        FR-05: Query the crash signatures database.
+
+        Query params:
+            q (str): Search text (e.g. 'OOM Error'). If omitted, returns all.
+
+        Returns:
+            JSON list of {signature, actions, category}.
+        """
+        q = request.args.get('q', '').strip()
+        if q:
+            results = crash_sig_db.query(q)
+        else:
+            results = crash_sig_db.get_all()
+        return jsonify({"signatures": results, "query": q, "count": len(results)})
+
+    @app.route('/api/signatures', methods=['POST'])
+    def add_signature():
+        """Add or update a crash signature mapping."""
+        data = request.get_json(silent=True) or {}
+        pattern  = data.get('pattern', '').strip()
+        actions  = data.get('actions', [])
+        category = data.get('category', 'general')
+        if not pattern or not actions:
+            return jsonify({"error": "'pattern' and 'actions' are required"}), 400
+        ok = crash_sig_db.add_signature(pattern, actions, category)
+        return jsonify({"success": ok}), 201 if ok else 500
+
+    # ── Route: Log Injection (FR-02 / TC-02) ────────────────────
+    @app.route('/api/logs/inject', methods=['POST'])
+    def inject_log_line():
+        """
+        FR-02: Write a log line to the monitored log file for testing.
+
+        Body JSON:
+            line (str): The raw log line to append.
+            log_file (str, optional): Path to log file (default: data/app.log)
+        """
+        import os as _os
+        data = request.get_json(silent=True) or {}
+        line = data.get('line', '').strip()
+        if not line:
+            return jsonify({"error": "'line' is required"}), 400
+
+        log_path = data.get('log_file', 'data/app.log')
+        abs_log_path = _os.path.abspath(
+            _os.path.join(_os.path.dirname(__file__), log_path)
+        )
+        _os.makedirs(_os.path.dirname(abs_log_path), exist_ok=True)
+
+        import time as _time
+        from datetime import datetime as _dt
+        timestamp = _dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        full_line = f"{timestamp} {line}\n"
+
+        with open(abs_log_path, 'a') as f:
+            f.write(full_line)
+
+        return jsonify({"injected": full_line.strip(), "file": abs_log_path})
+
+    # ── Route: SHAP Values (FR-04) ───────────────────────────────
+    @app.route('/api/prediction/shap', methods=['GET'])
+    def get_shap_values():
+        """
+        FR-04: Return SHAP feature attribution values from the last prediction.
+
+        Returns:
+            JSON with shap_values dict and shap_top_feature.
+        """
+        shap_values   = getattr(crash_predictor, '_last_shap_values', {})
+        top_feature   = max(shap_values, key=lambda k: abs(shap_values[k]), default=None) \
+                        if shap_values else None
+        return jsonify({
+            "shap_values":    shap_values,
+            "shap_top_feature": top_feature,
+            "feature_count":  len(shap_values),
+        })
+
+    # ── Route: Ahead Prediction (FR-03) ─────────────────────────
+    @app.route('/api/prediction/ahead', methods=['GET'])
+    def get_prediction_ahead():
+        """
+        FR-03: Return 30-second-ahead crash probability extrapolation.
+
+        Query params:
+            seconds (float, default=30): Look-ahead horizon in seconds.
+        """
+        try:
+            seconds = float(request.args.get('seconds', 30.0))
+        except (TypeError, ValueError):
+            seconds = 30.0
+        result = crash_predictor.predict_ahead(seconds=seconds)
+        return jsonify(result)
+
+    # ── Route: Execute Remediation (FR-07) ──────────────────────
+    @app.route('/api/resolution/execute', methods=['POST'])
+    def execute_remediation():
+        """
+        FR-07: Execute a remediation action only if permission_granted=True.
+
+        Body JSON:
+            action (str): Action name (clear_cache, kill_process, etc.)
+            permission_granted (bool): User approval flag.
+            pid (int, optional): Process ID for process-level actions.
+            process_name (str, optional): Process name for logging.
+        """
+        data = request.get_json(silent=True) or {}
+        action     = data.get('action', 'noop')
+        permitted  = bool(data.get('permission_granted', False))
+        pid        = data.get('pid')  # may be None
+        proc_name  = data.get('process_name')
+        result = system_resolver.execute_remediation(
+            action_name=action,
+            permission_granted=permitted,
+            pid=int(pid) if pid is not None else None,
+            process_name=proc_name,
+        )
+        status_code = 200 if result["permission_granted"] else 403
+        return jsonify(result), status_code
+
+    # ── Route: Resolution Status (FR-08) ────────────────────────
+    @app.route('/api/resolution/status', methods=['GET'])
+    def get_resolution_status():
+        """
+        FR-08: Return post-action health validation status.
+
+        Returns:
+            JSON with stabilization result, CPU samples, and denied actions.
+        """
+        validator = get_post_action_validator()
+        return jsonify(validator.get_status())
+
     return app
 
 
@@ -430,6 +552,12 @@ def create_app(config_name=None):
 # ═══════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
+    # Suppress the "WARNING: This is a development server" banner
+    from flask import cli
+    import logging
+    cli.show_server_banner = lambda *args: None
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+    
     app = create_app(os.environ.get('FLASK_CONFIG', 'default'))
     try:
         # Bind to all interfaces on port 5000 for local development

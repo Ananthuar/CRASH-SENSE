@@ -203,9 +203,14 @@ def sign_in_email_password(email: str, password: str) -> dict:
 
     # Check email verification status
     try:
-        result["email_verified"] = is_email_verified(id_token)
+        is_verified = is_email_verified(id_token)
+        result["email_verified"] = is_verified
     except Exception:
+        is_verified = False
         result["email_verified"] = False
+
+    if not is_verified:
+        raise AuthError("Please verify your email address before signing in.")
 
     return result
 

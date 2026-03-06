@@ -225,7 +225,10 @@ class LogsScreen(ctk.CTkFrame):
 
     def _do_fetch(self):
         try:
-            resp = requests.get(f"{_API_BASE}/api/logs", timeout=3)
+            from desktop import session
+            user = session.get_user()
+            params = {"uid": user.get("uid")} if user else {}
+            resp = requests.get(f"{_API_BASE}/api/logs", params=params, timeout=3)
             if resp.status_code == 200 and not self._destroyed:
                 data = resp.json()
                 self.after(0, lambda: self._apply_data(data))

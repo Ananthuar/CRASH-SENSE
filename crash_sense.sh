@@ -115,9 +115,14 @@ trap cleanup EXIT
 
 cd "$SCRIPT_DIR/backend"
 "$PYTHON" -c "
+import logging, warnings
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
+from flask import cli
+cli.show_server_banner = lambda *a: None
+warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 from app import create_app
-import os, sys
-app = create_app(os.environ.get('FLASK_CONFIG', 'default'))
+import os
+app = create_app('production')
 app.run(host='0.0.0.0', port=5000, use_reloader=False)
 " &
 BACKEND_PID=$!

@@ -88,8 +88,6 @@ class SettingsScreen(ctk.CTkFrame):
         # Section 3: Notifications
         self._section(scroll, "notification_bell", "Notification Settings", "Configure how you receive alerts", self._build_notifications)
 
-        # Section 4: User Management
-        self._section(scroll, "user_group", "User Management", "Manage team access and permissions", self._build_users)
 
         # Section 5: Logout
         logout_card = ctk.CTkFrame(scroll, fg_color=RED_BG, corner_radius=16, border_width=1, border_color="#5c1a1a")
@@ -357,8 +355,6 @@ class SettingsScreen(ctk.CTkFrame):
         # ── External channel toggles (saved to backend) ─────────
         ext_notifs = [
             ("Email Notifications",  "Receive alerts via email",     self._settings.get("notif_email", True),  "notif_email"),
-            ("Slack Integration",    "Push alerts to Slack channel", self._settings.get("notif_slack", False), "notif_slack"),
-            ("SMS Alerts",           "Critical alerts via SMS",      self._settings.get("notif_sms",   False), "notif_sms"),
         ]
 
         for label, sub, default_on, key in ext_notifs:
@@ -383,75 +379,4 @@ class SettingsScreen(ctk.CTkFrame):
     def _on_notif_toggle(self, key, val):
         self._settings[key] = bool(val)
         self._schedule_save()
-
-    def _build_users(self, parent, header):
-        def on_add_user():
-            # Simply create a temporary popup to suggest logging out and using signup
-            popup = ctk.CTkToplevel(self)
-            popup.title("Add User")
-            popup.geometry("300x150")
-            popup.attributes("-topmost", True)
-            popup.configure(fg_color=BG_ROOT)
-            
-            ctk.CTkLabel(
-                popup, 
-                text="To add a new user to the organization,\nplease log out and use the Sign Up page.", 
-                font=ctk.CTkFont(family=FONT_FAMILY, size=12),
-                text_color=TEXT_PRIMARY
-            ).pack(expand=True, padx=20, pady=20)
-            
-            ctk.CTkButton(
-                popup, text="OK", width=80, corner_radius=8,
-                fg_color=ORANGE, hover_color="#ea6c10",
-                command=popup.destroy
-            ).pack(pady=(0, 20))
-
-        ctk.CTkButton(
-            header, text="Add User", width=90, height=34, corner_radius=8,
-            fg_color=ORANGE, hover_color="#ea6c10",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
-            command=on_add_user
-        ).pack(side="right")
-
-        # Try to fetch live users from Firestore via backend
-        users = []
-        try:
-            resp = requests.get(f"{BACKEND_BASE}/api/users", timeout=3)
-            if resp.ok:
-                remote = resp.json()
-                if remote:
-                    # Normalise: backend returns {display_name, email, role, uid}
-                    users = [
-                        {
-                            "name":  u.get("display_name", u.get("email", "Unknown")),
-                            "email": u.get("email", ""),
-                            "role":  u.get("role", "User"),
-                        }
-                        for u in remote
-                    ]
-        except Exception:
-            pass  # backend offline
-
-        if not users:
-            ctk.CTkLabel(parent, text="No users found or backend offline.", font=ctk.CTkFont(family=FONT_FAMILY, size=12), text_color=TEXT_MUTED).pack(pady=20)
-            return
-
-        for user in users:
-            row = ctk.CTkFrame(parent, fg_color=BG_CARD_INNER, corner_radius=10, border_width=1, border_color=BORDER)
-            row.pack(fill="x", pady=4)
-            ri = ctk.CTkFrame(row, fg_color="transparent")
-            ri.pack(fill="x", padx=14, pady=10)
-
-            initials = "".join(n[0] for n in user["name"].split())
-            av = ctk.CTkFrame(ri, width=38, height=38, corner_radius=19, fg_color=ORANGE)
-            av.pack(side="left")
-            av.pack_propagate(False)
-            ctk.CTkLabel(av, text=initials, font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"), text_color="#ffffff").pack(expand=True)
-
-            txt = ctk.CTkFrame(ri, fg_color="transparent")
-            txt.pack(side="left", padx=(10, 0))
-            ctk.CTkLabel(txt, text=user["name"], font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w")
-            ctk.CTkLabel(txt, text=user["email"], font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_SECONDARY).pack(anchor="w")
-
-            ctk.CTkLabel(ri, text=f" {user['role']} ", font=ctk.CTkFont(family=FONT_FAMILY, size=10, weight="bold"), text_color=ORANGE, fg_color="#2a1a08", corner_radius=10).pack(side="right")
 

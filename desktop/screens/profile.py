@@ -64,15 +64,40 @@ class ProfileScreen(ctk.CTkFrame):
         inner.pack(expand=True, fill="both", padx=48, pady=36)
 
         # Avatar
+        # Avatar
         initials = session.get_initials()
+        display_name = user.get("display_name") or user.get("email") or "Guest User"
+        
         avatar_frame = ctk.CTkFrame(inner, width=90, height=90, corner_radius=45, fg_color=ORANGE)
         avatar_frame.pack(pady=(0, 20))
         avatar_frame.pack_propagate(False)
-        ctk.CTkLabel(
+        self._avatar_lbl = ctk.CTkLabel(
             avatar_frame, text=initials,
             font=ctk.CTkFont(family=FONT_FAMILY, size=30, weight="bold"),
             text_color="#ffffff",
-        ).pack(expand=True)
+        )
+        self._avatar_lbl.pack(expand=True)
+        
+        def _fetch_avatar():
+            try:
+                import urllib.parse
+                name_encoded = urllib.parse.quote(display_name)
+                # Ensure no spaces by using + for spaces or standard urlencode
+                url = f"https://ui-avatars.com/api/?name={name_encoded}&background=random&color=fff&size=200&bold=true&rounded=true"
+                resp = requests.get(url, timeout=3)
+                if resp.status_code == 200:
+                    from PIL import Image
+                    import io
+                    img_data = resp.content
+                    image = Image.open(io.BytesIO(img_data)).convert("RGBA")
+                    
+                    ctk_img = ctk.CTkImage(light_image=image, dark_image=image, size=(90, 90))
+                    self._avatar_img_ref = ctk_img  # prevent GC
+                    self.after(0, lambda: self._avatar_lbl.configure(image=ctk_img, text=""))
+            except Exception:
+                pass
+                
+        threading.Thread(target=_fetch_avatar, daemon=True).start()
 
         # Header row: name + edit button
         header = ctk.CTkFrame(inner, fg_color="transparent")

@@ -171,11 +171,41 @@ class PredictionScreen(ctk.CTkFrame):
         self._canvas_gauge.create_arc(cx-r, cy-r, cx+r, cy+r, start=180, extent=-extent, outline=color, width=12, style="arc")
         
         # Needle
-        angle = np.pi - (score / 100) * np.pi
+        angle = np.pi - (max(0.001, score) / 100) * np.pi
         nx = cx + (r-15) * np.cos(angle)
         ny = cy - (r-15) * np.sin(angle)
         self._canvas_gauge.create_line(cx, cy, nx, ny, fill=TEXT_PRIMARY, width=3, capstyle="round")
         self._canvas_gauge.create_oval(cx-5, cy-5, cx+5, cy+5, fill=TEXT_PRIMARY, outline=BG_CARD)
+
+    def _animate_gauge(self, target_score, current_score=None, steps=30, current_step=0):
+        if self._destroyed: return
+        
+        if current_score is None:
+            current_score = getattr(self, '_last_score', 100)
+            
+        if current_score == target_score and current_step == 0:
+            self._draw_gauge(target_score)
+            return
+
+        if current_step > steps:
+            self._last_score = target_score
+            self._draw_gauge(target_score)
+            return
+
+        # Interpolate using ease-out-back for speedometer bounce effect
+        t = current_step / steps
+        c1 = 1.70158
+        c3 = c1 + 1
+        
+        ease = 1 + c3 * ((t - 1) ** 3) + c1 * ((t - 1) ** 2)
+        
+        interpolated = current_score + (target_score - current_score) * ease
+        
+        # Clamp slightly outside 0-100 to allow bounce but not crazy clipping
+        interpolated = max(-5.0, min(105.0, interpolated))
+        self._draw_gauge(interpolated)
+        
+        self.after(16, self._animate_gauge, target_score, current_score, steps, current_step + 1)
 
     def _schedule_update(self):
         if self._destroyed: return
@@ -207,7 +237,7 @@ class PredictionScreen(ctk.CTkFrame):
         ml_enabled = (ml_stat or {}).get("enabled", True)
 
         # Update Gauge
-        self._draw_gauge(score)
+        self._animate_gauge(score)
         score_color = GREEN if score >= 80 else ORANGE if score >= 50 else RED
         self._score_label.configure(text=str(int(score)), text_color=score_color)
         if not ml_enabled:

@@ -572,6 +572,7 @@ class CrashDetailsScreen(ctk.CTkFrame):
                 sp.set_color(BORDER)
             ax1.grid(True, color="#1e1e2a", linewidth=0.5, alpha=0.5)
             fig.tight_layout(pad=1.5)
+            fig.subplots_adjust(bottom=0.25)
 
             canvas = FigureCanvasTkAgg(fig, master=parent)
             canvas.get_tk_widget().pack(fill="x", padx=12, pady=(4, 16))

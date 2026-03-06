@@ -13,10 +13,11 @@ Provides two monitoring components:
        - poll_interval = 0.5 seconds
        - history_size = 120 entries  → 60 seconds of history
 
-2. **LogMonitor** (stub)
-   Uses the `watchdog` library to watch log files for changes. Currently
-   prints a notification when a monitored file is modified; the tokenisation
-   pipeline (LogTokenizer in preprocessor.py) will be wired in a future commit.
+2. **LogMonitor** (FR-02)
+   Uses the `watchdog` library to watch log files for changes. On any file
+   modification it reads the newly appended lines, tokenises them via
+   LogTokenizer, detects [ERROR] / [WARN] patterns, and fires a registered
+   event callback within <100 ms.
 
 Module-Level Singleton:
     `system_monitor` — A pre-created SystemMonitor instance for global use.
@@ -30,12 +31,23 @@ Usage:
     system_monitor.stop()                       # Cleanly terminate the thread
 """
 
+import os
+import re
 import time
 import threading
 import psutil
 from collections import deque
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+
+# Regex patterns for real-time log parsing (FR-02)
+_LOG_PATTERNS = [
+    (re.compile(r'\[ERROR\]', re.IGNORECASE),   'ERROR'),
+    (re.compile(r'\[WARN\]',  re.IGNORECASE),   'WARN'),
+    (re.compile(r'\[CRITICAL\]', re.IGNORECASE), 'CRITICAL'),
+    (re.compile(r'ERROR:',    re.IGNORECASE),   'ERROR'),
+    (re.compile(r'EXCEPTION', re.IGNORECASE),   'ERROR'),
+]
 
 
 class SystemMonitor:
@@ -157,6 +169,19 @@ class SystemMonitor:
         with self.lock:
             return list(self.metrics_history)
 
+    def get_history_since(self, since_timestamp: float) -> list:
+        """
+        Return metric snapshots collected after `since_timestamp`.
+
+        Args:
+            since_timestamp: UNIX epoch float.
+
+        Returns:
+            list[dict]: Snapshots whose timestamp > since_timestamp.
+        """
+        with self.lock:
+            return [m for m in self.metrics_history if m.get('timestamp', 0) > since_timestamp]
+
 
 class LogFileEventHandler(FileSystemEventHandler):
     """
@@ -195,20 +220,47 @@ class LogMonitor:
         self.log_paths = log_paths
         self.observer = Observer()
         self.handlers = []
+        self._event_callback = None       # FR-02: user-registered callback
+        self._file_positions = {}         # Track file read position per path
+        self._events: deque = deque(maxlen=500)  # Ring buffer of parsed events
+        self._lock = threading.Lock()
+
+    def set_event_callback(self, fn):
+        """
+        Register a callback fired for each parsed log event.
+
+        Args:
+            fn: Callable(event: dict) — receives a dict with keys:
+                  file_path, line, level, timestamp (float)
+        """
+        self._event_callback = fn
+
+    def get_recent_events(self) -> list:
+        """Return a copy of the recent parsed event buffer."""
+        with self._lock:
+            return list(self._events)
 
     def start(self):
         """
         Begin watching the parent directories of all configured log paths.
 
         Only directories that actually exist on disk are watched.
+        Also creates log files that don't exist yet (for FR-02 injection).
         """
+        # Ensure log files exist so watchdog can monitor their parent dirs
+        for log_file in self.log_paths:
+            abs_path = os.path.abspath(log_file)
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            if not os.path.exists(abs_path):
+                open(abs_path, 'a').close()  # create empty file
+            # Record initial file size to avoid re-reading existing content
+            self._file_positions[abs_path] = os.path.getsize(abs_path)
+
         # Deduplicate parent directories (watchdog watches directories, not files)
         paths_to_watch = set()
         for log_file in self.log_paths:
-            import os
-            if os.path.exists(log_file):
-                directory = os.path.dirname(os.path.abspath(log_file))
-                paths_to_watch.add(directory)
+            directory = os.path.dirname(os.path.abspath(log_file))
+            paths_to_watch.add(directory)
 
         event_handler = LogFileEventHandler(self._on_log_change)
 
@@ -222,18 +274,74 @@ class LogMonitor:
         self.observer.stop()
         self.observer.join()
 
-    def _on_log_change(self, file_path):
+    def _on_log_change(self, file_path: str):
         """
-        Internal callback triggered on any file modification in watched dirs.
+        FR-02: Real-time log parsing callback.
 
-        Filters events to only process files that match the configured log paths.
+        Reads only the *new* bytes appended since the last read (tail-style),
+        tokenises each line, detects ERROR/WARN patterns, and fires the
+        registered callback within <100ms of the file modification event.
 
         Args:
             file_path: Absolute path to the modified file.
         """
-        if any(file_path.endswith(target) for target in self.log_paths):
-            # TODO: Wire into LogTokenizer for real-time log processing
-            print(f"[LogMonitor] Change detected in {file_path}")
+        # Only process files we are explicitly monitoring
+        matched = any(
+            os.path.abspath(file_path).endswith(os.path.abspath(t).lstrip('/'))
+            or os.path.abspath(file_path) == os.path.abspath(t)
+            for t in self.log_paths
+        )
+        if not matched:
+            return
+
+        abs_path = os.path.abspath(file_path)
+        try:
+            current_size = os.path.getsize(abs_path)
+            last_pos = self._file_positions.get(abs_path, 0)
+
+            if current_size <= last_pos:
+                return  # File truncated or no new content
+
+            with open(abs_path, 'r', errors='replace') as f:
+                f.seek(last_pos)
+                new_content = f.read()
+
+            self._file_positions[abs_path] = current_size
+
+            for line in new_content.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Detect log level from pattern
+                detected_level = None
+                for pattern, level in _LOG_PATTERNS:
+                    if pattern.search(line):
+                        detected_level = level
+                        break
+
+                event = {
+                    'file_path':  abs_path,
+                    'line':       line,
+                    'level':      detected_level or 'INFO',
+                    'timestamp':  time.time(),
+                    'is_error':   detected_level in ('ERROR', 'CRITICAL'),
+                }
+
+                with self._lock:
+                    self._events.append(event)
+
+                # Fire the callback immediately (within the watchdog thread)
+                if self._event_callback:
+                    try:
+                        self._event_callback(event)
+                    except Exception as e:
+                        print(f"[LogMonitor] Callback error: {e}")
+
+                print(f"[LogMonitor] [{event['level']}] {line[:120]}")
+
+        except Exception as e:
+            print(f"[LogMonitor] Parse error for {file_path}: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════

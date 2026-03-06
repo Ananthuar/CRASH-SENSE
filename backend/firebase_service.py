@@ -155,3 +155,42 @@ def list_all_users() -> list[dict]:
         profile["uid"] = doc.id
         users.append(profile)
     return users
+
+# ── Global Logs ──────────────────────────────────────────────────
+
+def add_log_entry(uid: str, data: dict) -> dict:
+    """Store a log entry in the user's isolated logs collection."""
+    import time
+    db = _get_db()
+    if "timestamp" not in data:
+        data["timestamp"] = int(time.time())
+    db.collection("users").document(uid).collection("logs").add(data)
+    logger.info("Added log entry to Firestore for uid=%s: %s", uid, data.get("title", ""))
+    return data
+
+def get_logs(uid: str, limit: int = 50) -> list[dict]:
+    """Retrieve recent logs from the user's Firestore subcollection."""
+    db = _get_db()
+    docs = db.collection("users").document(uid).collection("logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(limit).stream()
+    logs = []
+    for doc in docs:
+        d = doc.to_dict()
+        d["id"] = doc.id
+        logs.append(d)
+    return logs
+
+# ── Email Notifications ──────────────────────────────────────────
+
+def send_email_notification(to_email: str, subject: str, text: str) -> dict:
+    """Send an email using Firebase Trigger Email extension by writing to 'mail' collection."""
+    db = _get_db()
+    data = {
+        "to": [to_email],
+        "message": {
+            "subject": subject,
+            "text": text
+        }
+    }
+    db.collection("mail").add(data)
+    logger.info("Queued email notification to %s", to_email)
+    return data

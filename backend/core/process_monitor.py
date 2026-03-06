@@ -329,6 +329,8 @@ class ProcessMonitor:
         self._thread = None
         self._last_cleanup = 0
         self._health_trend: deque = deque(maxlen=60)  # Health score history
+        self._current_ema_score: float = 100.0
+        self.active_uid: str = ""
 
     def start(self):
         """Start the background monitoring thread."""
@@ -397,28 +399,45 @@ class ProcessMonitor:
             tracked = len(self._process_history)
 
         # Health score: 100 = perfect, deduct for each alert by severity
-        score = 100
+        score = 100.0
+        
+        # Softened penalty deductions
         if critical > 0:
-            # No cap for critical; -25 for first, -10 for subsequent
-            score -= 25 + (critical - 1) * 10
+            score -= 15 + (critical - 1) * 8
         if high > 0:
-            # Max -40 deduction; -15 for first, -5 for subsequent
-            score -= min(40, 15 + (high - 1) * 5)
+            score -= min(25, 8 + (high - 1) * 4)
         if medium > 0:
-            # Max -20 deduction; -5 for first, -2 for subsequent
-            score -= min(20, 5 + (medium - 1) * 2)
-        score = max(0, min(100, score))
+            score -= min(10, 3 + (medium - 1) * 1)
+            
+        # Incorporate ML Crash Predictor 
+        try:
+            from core.crash_predictor import crash_predictor
+            # factor in 1-probability so high crash probability lowers the health score
+            latest_pred = crash_predictor._prediction_history[-1] if crash_predictor._prediction_history else None
+            if latest_pred:
+                crash_prob = latest_pred.get("probability", 0.0)
+                # Max penalty from ML is 25 points
+                score -= crash_prob * 25.0
+        except Exception:
+            pass
+
+        score = max(0.0, min(100.0, score))
+
+        # Apply Exponential Moving Average (EMA) to smooth out the score
+        alpha = 0.15 # Smoothing factor
+        self._current_ema_score = (alpha * score) + ((1 - alpha) * self._current_ema_score)
+        smoothed_score = round(self._current_ema_score, 1)
 
         # Record in trend
         self._health_trend.append({
-            "score": score,
+            "score": smoothed_score,
             "alerts": alert_count,
             "timestamp": time.time(),
         })
 
-        if score >= 80:
+        if smoothed_score >= 80:
             status = "healthy"
-        elif score >= 50:
+        elif smoothed_score >= 50:
             status = "warning" if high > 0 else "healthy"
         else:
             status = "critical"
@@ -429,7 +448,7 @@ class ProcessMonitor:
             "high_alerts":       high,
             "medium_alerts":     medium,
             "tracked_processes": tracked,
-            "health_score":      score,
+            "health_score":      smoothed_score,
             "status":            status,
         }
 
@@ -610,8 +629,31 @@ class ProcessMonitor:
                 self._active_alert_keys.add(key)
                 self._alerts.append(alert)
                 
+                # Proactive Firebase Logging
+                try:
+                    from firebase_service import add_log_entry
+                    _sev_level = {"critical": "ERROR", "high": "ERROR", "medium": "WARN", "low": "INFO"}
+                    if hasattr(self, 'active_uid') and self.active_uid:
+                        add_log_entry(self.active_uid, {
+                            "time": datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
+                            "level": _sev_level.get(alert.get("severity", "low"), "INFO"),
+                            "module": alert.get("name", "Unknown")[:20],
+                            "type": alert.get("type", "").replace("_", " ").title(),
+                            "msg": alert.get("detail", alert.get("title", "")),
+                            "pid": alert.get("pid"),
+                            "severity": alert.get("severity", "low")
+                        })
+                except Exception as e:
+                    pass
+                
                 # Proactive Resolution Execution
                 if alert.get("severity") == Severity.CRITICAL:
+                    try:
+                        from core.email_notifier import email_notifier
+                        email_notifier.send_critical_alert_async(alert, "admin@crashsense.local")
+                    except Exception as e:
+                        print(f"Failed to email critical alert: {e}")
+                        
                     a_type = alert.get("type")
                     if a_type == "cpu_runaway":
                         system_resolver.throttle_process(alert["pid"], alert["name"])

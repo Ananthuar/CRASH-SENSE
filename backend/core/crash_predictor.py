@@ -49,6 +49,13 @@ from collections import deque
 from sklearn.ensemble import IsolationForest
 import joblib
 
+try:
+    import shap as _shap
+    _SHAP_AVAILABLE = True
+except ImportError:
+    _SHAP_AVAILABLE = False
+    print("[CrashPredictor] shap not installed — FR-04 SHAP attribution disabled.")
+
 from core.collector import system_monitor
 from core.preprocessor import data_scaler
 from core.resolution import system_resolver
@@ -265,9 +272,14 @@ class HybridCrashPredictor:
         self._last_alert_time = 0
         self._last_risk_level = "Low"
 
+        # ── SHAP explainer (FR-04) ───────────────────────────────
+        self._shap_explainer = None
+        self._last_shap_values: dict = {}  # feature → shap_value
+
     def _load_pretrained_model(self):
         """Load the pre-trained Random Forest from disk."""
         import sys
+        import warnings
         
         try:
             # When frozen via PyInstaller, assets are shipped to a temp directory
@@ -281,7 +293,9 @@ class HybridCrashPredictor:
         model_path = os.path.normpath(model_path)
 
         try:
-            bundle = joblib.load(model_path)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
+                bundle = joblib.load(model_path)
             self._rf_model = bundle["model"]
             
             # Check if model has exactly the right number of features
@@ -648,6 +662,12 @@ class HybridCrashPredictor:
                 except Exception:
                     rf_prob = 0.0
 
+                # ── FR-04: SHAP feature attribution ─────────────────
+                try:
+                    self._compute_shap_values(rf_features)
+                except Exception:
+                    pass
+
         # ── Isolation Forest anomaly score ────────────────────────
         if_prob = 0.0
         if len(history) >= self.window_size + 5:
@@ -686,7 +706,7 @@ class HybridCrashPredictor:
         if probability >= 0.85 and rf_features is not None:
              _crash_logger.log_event_async(history, rf_features, probability, label=1)
 
-        # Store in history
+        # Store in history (include timestamp for FR-03 extrapolation)
         self._prediction_history.append({
             "probability": probability,
             "rf_prob":     rf_prob,
@@ -709,18 +729,25 @@ class HybridCrashPredictor:
             if needs_cache_drop:
                 system_resolver.clear_sys_cache()
 
+        # FR-04: top SHAP feature name
+        shap_top = max(self._last_shap_values, key=lambda k: abs(self._last_shap_values[k]), default=None) \
+                   if self._last_shap_values else None
+
         return {
             "crash_probability": round(probability, 4),
             "crash_percent":     int(probability * 100),
             "risk_level":        risk_level,
             "top_risk_factors":  risk_factors,
             "suggested_actions": actions,
+            "shap_top_feature":  shap_top,
+            "shap_values":       self._last_shap_values,
             "model_info": {
                 "rf_loaded":     self._rf_loaded,
                 "rf_probability": round(rf_prob, 4),
                 "if_fitted":     self._if_fitted,
                 "if_probability": round(if_prob, 4),
                 "ensemble":      f"{WEIGHT_RF:.0%} RF + {WEIGHT_ANOMALY:.0%} IF",
+                "shap_available": _SHAP_AVAILABLE,
             },
             "timestamp":   now,
             "data_points": len(history),
@@ -729,6 +756,142 @@ class HybridCrashPredictor:
     def get_trend(self) -> list[dict]:
         """Return recent prediction history for trend charts."""
         return list(self._prediction_history)
+
+    # ─────────────────────────────────────────────────────────────
+    #  FR-03: 30-second ahead crash prediction
+    # ─────────────────────────────────────────────────────────────
+
+    def predict_ahead(self, seconds: float = 30.0) -> dict:
+        """
+        FR-03: Predict whether a crash will occur within the next `seconds`.
+
+        Uses linear regression over the recent probability history to extrapolate
+        the trend. If the projected probability crosses 0.85 within `seconds`,
+        a pre-crash alert is generated.
+
+        Args:
+            seconds: Look-ahead window in seconds (default 30).
+
+        Returns:
+            dict with keys:
+                - alert (bool): True if crash predicted within the horizon
+                - projected_probability (float): extrapolated probability
+                - seconds_until_critical (float | None): est. time-to-critical
+                - confidence (str): 'high' / 'medium' / 'low'
+                - message (str): human-readable summary
+        """
+        history = list(self._prediction_history)
+        CRASH_THRESHOLD = 0.85
+        MIN_SAMPLES = 5
+
+        if len(history) < MIN_SAMPLES:
+            return {
+                "alert": False,
+                "projected_probability": self._last_probability,
+                "seconds_until_critical": None,
+                "confidence": "low",
+                "message": "Insufficient history for ahead prediction.",
+            }
+
+        # Extract time series
+        t0 = history[0]["timestamp"]
+        ts = np.array([(h["timestamp"] - t0) for h in history])
+        ys = np.array([h["probability"] for h in history])
+
+        # Linear regression: y = slope * t + intercept
+        n = len(ts)
+        t_mean = np.mean(ts)
+        y_mean = np.mean(ys)
+        denom = np.sum((ts - t_mean) ** 2)
+        slope = float(np.sum((ts - t_mean) * (ys - y_mean)) / denom) if denom > 1e-10 else 0.0
+        intercept = y_mean - slope * t_mean
+
+        # Project probability at now + seconds
+        t_now = history[-1]["timestamp"] - t0
+        t_future = t_now + seconds
+        projected_prob = float(np.clip(slope * t_future + intercept, 0.0, 1.0))
+
+        # Estimate time until probability crosses threshold
+        seconds_until_critical = None
+        alert = False
+        if slope > 0 and projected_prob >= CRASH_THRESHOLD:
+            alert = True
+            current_prob = float(np.clip(slope * t_now + intercept, 0.0, 1.0))
+            if current_prob < CRASH_THRESHOLD:
+                seconds_until_critical = max(0.0, (CRASH_THRESHOLD - current_prob) / slope)
+            else:
+                seconds_until_critical = 0.0  # Already critical
+
+        # Confidence based on how monotonic the trend is
+        diffs = np.diff(ys)
+        positive_ratio = float(np.sum(diffs > 0) / len(diffs)) if len(diffs) > 0 else 0.5
+        if positive_ratio > 0.7 and abs(slope) > 0.005:
+            confidence = "high"
+        elif positive_ratio > 0.5:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+        if alert:
+            secs_str = f"{seconds_until_critical:.0f}s" if seconds_until_critical else "now"
+            message = (f"⚠️ Crash predicted in ~{secs_str} — "
+                       f"probability trending to {projected_prob:.0%}")
+        elif projected_prob > 0.5:
+            message = f"System showing elevated risk trend ({projected_prob:.0%} in {seconds:.0f}s)"
+        else:
+            message = f"Stable. Projected probability in {seconds:.0f}s: {projected_prob:.0%}"
+
+        return {
+            "alert": alert,
+            "projected_probability": round(projected_prob, 4),
+            "seconds_until_critical": round(seconds_until_critical, 1) if seconds_until_critical is not None else None,
+            "confidence": confidence,
+            "slope": round(slope, 6),
+            "message": message,
+        }
+
+    # ─────────────────────────────────────────────────────────────
+    #  FR-04: SHAP Feature Attribution
+    # ─────────────────────────────────────────────────────────────
+
+    def _compute_shap_values(self, rf_features: np.ndarray):
+        """
+        FR-04: Compute SHAP values for the current RF prediction.
+
+        Uses SHAP TreeExplainer (fast, exact for tree models) to produce
+        per-feature attribution scores. Results are stored in
+        `self._last_shap_values` as {feature_name: shap_value}.
+
+        Args:
+            rf_features: (1, n_features) numpy array for the current window.
+        """
+        if not _SHAP_AVAILABLE or not self._rf_loaded or self._rf_model is None:
+            return
+
+        try:
+            if self._shap_explainer is None:
+                self._shap_explainer = _shap.TreeExplainer(self._rf_model)
+
+            # SHAP for class 1 (crash)
+            shap_vals = self._shap_explainer.shap_values(rf_features)
+
+            # shap_values shape: [2] for binary → pick class 1
+            if isinstance(shap_vals, list) and len(shap_vals) == 2:
+                vals = shap_vals[1][0]   # shape (n_features,)
+            elif isinstance(shap_vals, np.ndarray):
+                if shap_vals.ndim == 3:
+                    vals = shap_vals[0, :, 1]  # newer shap: (1, n_features, 2)
+                else:
+                    vals = shap_vals[0]
+            else:
+                return
+
+            self._last_shap_values = {
+                name: round(float(val), 6)
+                for name, val in zip(_RF_FEATURE_NAMES, vals)
+            }
+        except Exception as e:
+            print(f"[CrashPredictor] SHAP computation error: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════
